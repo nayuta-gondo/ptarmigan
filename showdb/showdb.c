@@ -63,6 +63,7 @@
 #define SHOW_PREIMAGE           (0x0100)
 #define SHOW_ANNOSKIP           (0x0200)
 #define SHOW_ANNOINVOICE        (0x0400)
+#define SHOW_CLOSED_CH          (0x0800)
 
 #define M_SZ_ANNOINFO_CNL       (sizeof(uint64_t) + 1)
 #define M_SZ_ANNOINFO_NODE      (UCOIN_SZ_PUBKEY)
@@ -92,6 +93,7 @@ static int          cnt1;
 static int          cnt2;
 static int          cnt3;
 static int          cnt4;
+static int          cnt5;
 static MDB_env      *mpDbSelf = NULL;
 static MDB_env      *mpDbNode = NULL;
 static FILE         *fp_err;
@@ -110,6 +112,7 @@ static void dumpit_self(MDB_txn *txn, MDB_dbi dbi)
 
         int retval = ln_lmdb_self_load(&self, txn, dbi);
         if (retval != 0) {
+            printf(M_QQ("load") ":" M_QQ("%s"), mdb_strerror(retval));
             return;
         }
 
@@ -130,20 +133,19 @@ static void dumpit_self(MDB_txn *txn, MDB_dbi dbi)
     }
 }
 
-static void dumpit_ss(MDB_txn *txn, MDB_dbi dbi)
+static void dumpit_bkself(MDB_txn *txn, MDB_dbi dbi)
 {
-    //shared secret
-    if (showflag & (SHOW_SELF | SHOW_WALLET)) {
-        MDB_val key, data;
-
-        for (uint32_t lp = 0; lp < LN_HTLC_MAX; lp++) {
-            key.mv_size = sizeof(uint32_t);
-            key.mv_data = &lp;
-            int retval = mdb_get(txn, dbi, &key, &data);
-            if (retval != 0) {
-                break;
-            }
+    //bkself
+    if (showflag & (SHOW_CLOSED_CH)) {
+        if (cnt5) {
+            printf(",\n");
+        } else {
+            printf(M_QQ("closed_self") ": [");
         }
+        printf("{");
+        ln_lmdb_bkself_show(txn, dbi);
+        printf("}");
+        cnt5++;
     }
 }
 
@@ -450,6 +452,10 @@ int main(int argc, char *argv[])
             showflag = SHOW_WALLET;
             env = 0;
             break;
+        case 'q':
+            showflag = SHOW_CLOSED_CH;
+            env = 0;
+            break;
         case 'c':
             showflag = SHOW_CNLANNO | SHOW_CNLANNO_SCI;
             env = 1;
@@ -498,34 +504,36 @@ int main(int argc, char *argv[])
             }
             sprintf(selfpath, "%s%s", argv[2], LNDB_SELFENV_DIR);
             sprintf(nodepath, "%s%s", argv[2], LNDB_NODEENV_DIR);
-            // fprintf(stderr, "selfpath=%s\n", selfpath);
-            // fprintf(stderr, "nodepath=%s\n", nodepath);
         }
     } else {
         fprintf(stderr, "usage:\n");
         fprintf(stderr, "\t%s <option> [<db dir>]\n", argv[0]);
-        fprintf(stderr, "\t\twallet  : show wallet info\n");
-        fprintf(stderr, "\t\tself    : show self info\n");
-        fprintf(stderr, "\t\tchannel : show channel info\n");
-        fprintf(stderr, "\t\tnode    : show node info\n");
-        fprintf(stderr, "\t\tversion : version\n");
+        fprintf(stderr, "\t\tw : wallet info\n");
+        fprintf(stderr, "\t\ts : self info\n");
+        fprintf(stderr, "\t\tq : closed self info\n");
+        fprintf(stderr, "\t\tc : channel_announcement/channel_update\n");
+        fprintf(stderr, "\t\tn : node_announcement\n");
+        fprintf(stderr, "\t\tv : DB version\n");
+        fprintf(stderr, "\t\ta : (internal)announcement received/sent node_id list\n");
+        fprintf(stderr, "\t\tk : (internal)skip routing channel list\n");
+        fprintf(stderr, "\t\ti : (internal)paying invoice\n");
         return -1;
     }
 
     ret = mdb_env_create(&mpDbSelf);
     assert(ret == 0);
-    ret = mdb_env_set_maxdbs(mpDbSelf, 2);
+    ret = mdb_env_set_maxdbs(mpDbSelf, 5);
     assert(ret == 0);
-    ret = mdb_env_open(mpDbSelf, selfpath, 0, 0664);
+    ret = mdb_env_open(mpDbSelf, selfpath, MDB_RDONLY, 0664);
     if (ret) {
         fprintf(stderr, "fail: cannot open[%s]\n", selfpath);
         return -1;
     }
     ret = mdb_env_create(&mpDbNode);
     assert(ret == 0);
-    ret = mdb_env_set_maxdbs(mpDbNode, 2);
+    ret = mdb_env_set_maxdbs(mpDbNode, 5);
     assert(ret == 0);
-    ret = mdb_env_open(mpDbNode, nodepath, 0, 0664);
+    ret = mdb_env_open(mpDbNode, nodepath, MDB_RDONLY, 0664);
     if (ret) {
         fprintf(stderr, "fail: cannot open[%s]\n", nodepath);
         return -1;
@@ -555,11 +563,8 @@ int main(int argc, char *argv[])
         return -1;
     }
 
-    ret = mdb_txn_begin(p_env, NULL, 0, &txn);
-    if (ret != 0) {
-        fprintf(stderr, "fail: %s\n", mdb_strerror(ret));
-        return -1;
-    }
+    ret = mdb_txn_begin(p_env, NULL, MDB_RDONLY, &txn);
+    assert(ret == 0);
     ret = mdb_dbi_open(txn, NULL, 0, &dbi);
     if (ret != 0) {
         fprintf(stderr, "fail: DB cannot open.\n");
@@ -596,8 +601,11 @@ int main(int argc, char *argv[])
                 case LN_LMDB_DBTYPE_SELF:
                     dumpit_self(txn, dbi2);
                     break;
-                case LN_LMDB_DBTYPE_SHARED_SECRET:
-                    dumpit_ss(txn, dbi2);
+                case LN_LMDB_DBTYPE_ADD_HTLC:
+                    //LN_LMDB_DBTYPE_SELFで読み込むので、スルー
+                    break;
+                case LN_LMDB_DBTYPE_BKSELF:
+                    dumpit_bkself(txn, dbi2);
                     break;
                 case LN_LMDB_DBTYPE_CHANNEL_ANNO:
                     dumpit_channel(txn, dbi2);
@@ -629,7 +637,7 @@ int main(int argc, char *argv[])
             mdb_close(mdb_txn_env(txn), dbi2);
         }
     }
-    if (cnt0 || cnt1 || cnt2 || cnt3 || cnt4) {
+    if (cnt0 || cnt1 || cnt2 || cnt3 || cnt4 || cnt5) {
         printf("]");
     }
     printf("}\n");

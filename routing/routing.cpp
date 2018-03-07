@@ -263,9 +263,9 @@ static void dumpit_self(MDB_txn *txn, MDB_dbi dbi, const uint8_t *p1, const uint
             //
 
             //p1が非NULL == my node_id
-            if (self.short_channel_id != 0) {
-                //チャネルは開設している
-                p2 = self.peer_node.node_id;
+            if ((self.short_channel_id != 0) && ((self.fund_flag & LN_FUNDFLAG_CLOSE) == 0)) {
+                //チャネルは開設している && close処理をしていない
+                p2 = self.peer_node_id;
 
 #ifdef M_DEBUG
                 fprintf(fp_err, "self.short_channel_id: %" PRIx64 "\n", self.short_channel_id);
@@ -332,7 +332,7 @@ static bool loaddb(const char *pDbPath, const uint8_t *p1, const uint8_t *p2, bo
     assert(ret == 0);
     ret = mdb_env_set_maxdbs(pDbSelf, 2);
     assert(ret == 0);
-    ret = mdb_env_open(pDbSelf, selfpath, 0, 0664);
+    ret = mdb_env_open(pDbSelf, selfpath, MDB_RDONLY, 0664);
     if (ret) {
         fprintf(fp_err, "fail: cannot open[%s]\n", selfpath);
         return false;
@@ -389,9 +389,9 @@ static bool loaddb(const char *pDbPath, const uint8_t *p1, const uint8_t *p2, bo
     }
 
     //self
-    ret = mdb_txn_begin(pDbSelf, NULL, 0, &txn_self);
+    ret = mdb_txn_begin(pDbSelf, NULL, MDB_RDONLY, &txn_self);
     if (ret != 0) {
-        fprintf(fp_err, "fail: DB txn 1: %s\n", mdb_strerror(ret));
+        fprintf(fp_err, "fail: DB txn 1\n");
         return false;
     }
     ret = mdb_dbi_open(txn_self, NULL, 0, &dbi);
@@ -426,9 +426,9 @@ static bool loaddb(const char *pDbPath, const uint8_t *p1, const uint8_t *p2, bo
 
 
     //channel_anno
-    ret = mdb_txn_begin(pDbNode, NULL, 0, &txn_node);
+    ret = mdb_txn_begin(pDbNode, NULL, MDB_RDONLY, &txn_node);
     if (ret != 0) {
-        fprintf(fp_err, "fail: DB txn 2: %s\n", mdb_strerror(ret));
+        fprintf(fp_err, "fail: DB txn 2\n");
         return false;
     }
     ret = mdb_dbi_open(txn_node, NULL, 0, &dbi);
@@ -581,6 +581,14 @@ int main(int argc, char* argv[])
             //help
             fprintf(fp_err, "usage:");
             fprintf(fp_err, "\t%s -s PAYER_NODEID -r PAYEE_NODEID [-d DB_DIR] [-a AMOUNT_MSAT] [-e MIN_FINAL_CLTV_EXPIRY] [-p PAYMENT_HASH] [-j] [-c]\n", argv[0]);
+            fprintf(fp_err, "\t\t-s : sender(payer) node_id\n");
+            fprintf(fp_err, "\t\t-r : receiver(payee) node_id\n");
+            fprintf(fp_err, "\t\t-d : db directory\n");
+            fprintf(fp_err, "\t\t-a : amount_msat\n");
+            fprintf(fp_err, "\t\t-e : min_final_cltv_expiry\n");
+            fprintf(fp_err, "\t\t-p : payment_hash\n");
+            fprintf(fp_err, "\t\t-j : output JSON format(default: CSV format)\n");
+            fprintf(fp_err, "\t\t-c : clear routing skip channel list\n");
             return -1;
         default:
             break;

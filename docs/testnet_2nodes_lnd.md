@@ -4,7 +4,9 @@
 
 * bitcoind v0.15.x(not v0.16.x)
 * [lnd](https://github.com/lightningnetwork/lnd/tree/00ea46d9aeabf670dfb18c9e9c5f10f741ff5192) : commit 00ea46d9aeabf670dfb18c9e9c5f10f741ff5192
-* [ptarmigan](https://github.com/nayutaco/ptarmigan/tree/e996237ae6d198e43bf04e8ee37a4d406971a10f) : commit e996237ae6d198e43bf04e8ee37a4d406971a10f
+* [ptarmigan](https://github.com/nayutaco/ptarmigan/tree/2018-03-03) : tag 2018-03-03  (git checkout -b test refs/tags/2018-03-03)
+  * When ptarmigan version up with DB change is done, you need DB clean(`rm -rf dbucoin`).  
+    (Next version up will be include DB change)
 
 ----
 
@@ -17,7 +19,7 @@
 #### Let's create a channel.
 
  1. Running bitcoin node
- 
+
  * [bitcoind] `~/.bitcoin/bitcoin.conf`
 
 ```text
@@ -137,7 +139,7 @@ cd install/node
 10. [btc] Waiting for generating a block
 
 The channel is gererated after reaching three blocks.  
-  
+
 When status is established in a result of `ucoincli -l`, we can confirm that if the channel is generated.  
 Combining `watch` and `jq` is also available for observing it.
 
@@ -195,4 +197,4 @@ lncli --no-macaroons payinvoice <BOLT11 invoice>
 lncli --no-macaroons listchannels
 ```
 
-* If successful, msatoshi_to_us will be 99980000.
+* If successful, `local_balance` will be 99980.

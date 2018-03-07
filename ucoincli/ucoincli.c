@@ -81,6 +81,7 @@ static char         mBuf[BUFFER_SIZE];
 static void stop_rpc(char *pJson);
 static void getinfo_rpc(char *pJson);
 static void connect_rpc(char *pJson);
+static void disconnect_rpc(char *pJson);
 static void fund_rpc(char *pJson, const funding_conf_t *pFund);
 static void invoice_rpc(char *pJson, uint64_t Amount, bool conn);
 static void erase_invoice_rpc(char *pJson, const char *pPaymentHash);
@@ -116,7 +117,7 @@ int main(int argc, char *argv[])
     bool b_send = true;
     int opt;
     int options = M_OPTIONS_INIT;
-    while ((opt = getopt(argc, argv, "htqlc:f:i:e:mp:r:xgwa:d:")) != -1) {
+    while ((opt = getopt(argc, argv, "htq::lc:f:i:e:mp:r:xgwa:d:")) != -1) {
         switch (opt) {
         case 'h':
             options = M_OPTIONS_HELP;
@@ -136,19 +137,22 @@ int main(int argc, char *argv[])
             options = M_OPTIONS_EXEC;
             break;
 
+        case 'q':
+            if (options == M_OPTIONS_CONN) {
+                //特定接続を切る
+                disconnect_rpc(mBuf);
+                options = M_OPTIONS_EXEC;
+                conn = false;
+            } else {
+                //ucoind終了
+                stop_rpc(mBuf);
+                options = M_OPTIONS_STOP;
+            }
+            break;
+
         //
         // -c不要
         //
-        case 'q':
-            //ucoind停止
-            if (options > M_OPTIONS_STOP) {
-                stop_rpc(mBuf);
-                options = M_OPTIONS_STOP;
-            } else {
-                printf("fail: too many options\n");
-                options = M_OPTIONS_HELP;
-            }
-            break;
         case 'l':
             //channel一覧
             if (options == M_OPTIONS_INIT) {
@@ -319,6 +323,13 @@ int main(int argc, char *argv[])
                     mPeerPort = peer.port;
                     misc_bin2str(mPeerNodeId, peer.node_id, UCOIN_SZ_PUBKEY);
                     options = M_OPTIONS_CONN;
+                } else if (strlen(optarg) == UCOIN_SZ_PUBKEY * 2) {
+                    //node_idを直で指定した可能性あり(connectとしては使用できない)
+                    strcpy(mPeerAddr, "0.0.0.0");
+                    mPeerPort = 0;
+                    strcpy(mPeerNodeId, optarg);
+                    options = M_OPTIONS_CONN;
+                    printf("-c node_id\n");
                 } else {
                     printf("fail: peer configuration file\n");
                     options = M_OPTIONS_HELP;
@@ -399,7 +410,7 @@ int main(int argc, char *argv[])
     if (options == M_OPTIONS_ERR) {
         return -1;
     }
-    if ((options == M_OPTIONS_INIT) || (options == M_OPTIONS_HELP)) {
+    if ((options == M_OPTIONS_INIT) || (options == M_OPTIONS_HELP) || (!conn && (options == M_OPTIONS_CONN))) {
         printf("[usage]\n");
         printf("\t%s <-t> <options> [<JSON-RPC port(not ucoind port)>]\n", argv[0]);
         printf("\t\t-h : help\n");
@@ -412,13 +423,18 @@ int main(int argc, char *argv[])
         printf("\t\t-r <BOLT#11 invoice>(,<additional amount_msat>)(,<additional min_filnal_cltv_expiry>) : payment(don't put a space before or after the comma)\n");
         printf("\t\t-m : show payment_hashs\n");
         printf("\t\t-c <peer.conf> : connect node\n");
-        printf("\t\t-c <peer.conf> -f <fund.conf> : funding\n");
-        printf("\t\t-c <peer.conf> -x : mutual close channel\n");
-        printf("\t\t-c <peer.conf> -w : get last error\n");
-        // printf("\n");
+        printf("\t\t-c <peer node_id> OR <peer.conf> -f <fund.conf> : funding\n");
+        printf("\t\t-c <peer node_id> OR <peer.conf> -x : mutual close channel\n");
+        printf("\t\t-c <peer node_id> OR <peer.conf> -w : get last error\n");
+        printf("\t\t-c <peer node_id> OR <peer.conf> -q : disconnect node\n");
+        printf("\n");
         // printf("\t\t-a <IP address> : [debug]JSON-RPC send address\n");
-        // printf("\t\t-d <value> : [debug]debug option\n");
-        // printf("\t\t-c <node.conf> -g : [debug]get commitment transaction\n");
+        printf("\t\t-d <value> : [debug]debug option\n");
+        printf("\t\t\tb0 ... no update_fulfill_htlc\n");
+        printf("\t\t\tb1 ... no closing transaction\n");
+        printf("\t\t\tb2 ... force payment_preimage mismatch\n");
+        printf("\t\t\tb3 ... no node auto connect\n");
+        printf("\t\t-c <peer node_id> OR <peer.conf> -g : [debug]get commitment transaction\n");
         return -1;
     }
 
@@ -470,6 +486,20 @@ static void connect_rpc(char *pJson)
     snprintf(pJson, BUFFER_SIZE,
         "{"
             M_STR("method", "connect") M_NEXT
+            M_QQ("params") ":[ "
+                //peer_nodeid, peer_addr, peer_port
+                M_QQ("%s") "," M_QQ("%s") ",%d"
+            " ]"
+        "}",
+            mPeerNodeId, mPeerAddr, mPeerPort);
+}
+
+
+static void disconnect_rpc(char *pJson)
+{
+    snprintf(pJson, BUFFER_SIZE,
+        "{"
+            M_STR("method", "disconnect") M_NEXT
             M_QQ("params") ":[ "
                 //peer_nodeid, peer_addr, peer_port
                 M_QQ("%s") "," M_QQ("%s") ",%d"
