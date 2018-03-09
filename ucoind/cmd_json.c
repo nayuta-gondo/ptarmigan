@@ -76,6 +76,8 @@ static cJSON *cmd_routepay(jrpc_context *ctx, cJSON *params, cJSON *id);
 static cJSON *cmd_getinfo(jrpc_context *ctx, cJSON *params, cJSON *id);
 static cJSON *cmd_stop(jrpc_context *ctx, cJSON *params, cJSON *id);
 static cJSON *cmd_getlasterror(jrpc_context *ctx, cJSON *params, cJSON *id);
+static cJSON *cmd_disautoconn(jrpc_context *ctx, cJSON *params, cJSON *id);
+static cJSON *cmd_removechannel(jrpc_context *ctx, cJSON *params, cJSON *id);
 static cJSON *cmd_debug(jrpc_context *ctx, cJSON *params, cJSON *id);
 static cJSON *cmd_getcommittx(jrpc_context *ctx, cJSON *params, cJSON *id);
 static lnapp_conf_t *search_connected_lnapp_node(const uint8_t *p_node_id);
@@ -100,6 +102,8 @@ void cmd_json_start(uint16_t Port)
     jrpc_register_procedure(&mJrpc, cmd_getinfo,     "getinfo", NULL);
     jrpc_register_procedure(&mJrpc, cmd_stop,        "stop", NULL);
     jrpc_register_procedure(&mJrpc, cmd_getlasterror,"getlasterror", NULL);
+    jrpc_register_procedure(&mJrpc, cmd_disautoconn, "disautoconn", NULL);
+    jrpc_register_procedure(&mJrpc, cmd_removechannel,"removechannel", NULL);
     jrpc_register_procedure(&mJrpc, cmd_debug,       "debug", NULL);
     jrpc_register_procedure(&mJrpc, cmd_getcommittx, "getcommittx", NULL);
     jrpc_server_run(&mJrpc);
@@ -491,8 +495,14 @@ static cJSON *cmd_invoice(jrpc_context *ctx, cJSON *params, cJSON *id)
 
     const ucoin_util_keys_t *p_keys = ucoind_nodekeys();
     ln_invoice_t invoice_data;
-#warning BOLT#11形式はTESTNETのみになっている
+#ifndef NETKIND
+#error not define NETKIND
+#endif
+#if NETKIND==0
+    invoice_data.hrp_type = LN_INVOICE_MAINNET;
+#elif NETKIND==1
     invoice_data.hrp_type = LN_INVOICE_TESTNET;
+#endif
     invoice_data.amount_msat = amount;
     invoice_data.min_final_cltv_expiry = LN_MIN_FINAL_CLTV_EXPIRY;
     memcpy(invoice_data.pubkey, p_keys->pub, UCOIN_SZ_PUBKEY);
@@ -893,8 +903,8 @@ static cJSON *cmd_getinfo(jrpc_context *ctx, cJSON *params, cJSON *id)
             p += LN_SZ_HASH;
             cJSON_AddItemToArray(result_hash, cJSON_CreateString(hash_str));
         }
-        free(p_hash);       //ln_lmdbでrealloc()している
-        cJSON_AddItemToObject(result, "paying", result_hash);
+        free(p_hash);       //ln_lmdbでmalloc/realloc()している
+        cJSON_AddItemToObject(result, "paying_hash", result_hash);
     }
     p2p_svr_show_self(result_svr);
     cJSON_AddItemToObject(result, "server", result_svr);
@@ -958,6 +968,56 @@ static cJSON *cmd_getlasterror(jrpc_context *ctx, cJSON *params, cJSON *id)
 
 LABEL_EXIT:
     return NULL;
+}
+
+
+static cJSON *cmd_disautoconn(jrpc_context *ctx, cJSON *params, cJSON *id)
+{
+    (void)id;
+
+    const char *p_str = NULL;
+
+    cJSON *json = cJSON_GetArrayItem(params, 0);
+    if (json && (json->type == cJSON_String)) {
+        if (json->valuestring[0] == '1') {
+            monitor_disable_autoconn(true);
+            p_str = "disable auto connect";
+        } else if (json->valuestring[0] == '0') {
+            monitor_disable_autoconn(false);
+            p_str = "enable auto connect";
+        } else {
+            //none
+        }
+    }
+    if (p_str != NULL) {
+        return cJSON_CreateString(p_str);
+    } else {
+        ctx->error_code = RPCERR_PARSE;
+        ctx->error_message = strdup(RPCERR_PARSE_STR);
+        return NULL;
+    }
+}
+
+
+static cJSON *cmd_removechannel(jrpc_context *ctx, cJSON *params, cJSON *id)
+{
+    (void)id;
+
+    bool ret = false;
+    uint8_t channel_id[LN_SZ_CHANNEL_ID];
+
+    cJSON *json = cJSON_GetArrayItem(params, 0);
+    if (json && (json->type == cJSON_String)) {
+        misc_str2bin(channel_id, sizeof(channel_id), json->valuestring);
+        ret = ln_db_self_del(channel_id);
+    }
+    if (ret) {
+        return cJSON_CreateString(kOK);
+    } else {
+        ctx->error_code = RPCERR_PARSE;
+        ctx->error_message = strdup(RPCERR_PARSE_STR);
+        return NULL;
+    }
 }
 
 
