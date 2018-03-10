@@ -216,11 +216,12 @@ static void dumpit_chan(MDB_txn *txn, MDB_dbi dbi, MDB_dbi dbi_skip)
                 break;
             case LN_DB_CNLANNO_UPD1:
             case LN_DB_CNLANNO_UPD2:
-                if ((mNodeNum > 0) && (mpNodes[mNodeNum - 1].short_channel_id == upd.short_channel_id)) {
+                if (mNodeNum > 0) {
                     idx = type - LN_DB_CNLANNO_UPD1;
                     bret = ln_getparams_cnl_upd(&upd, buf.buf, buf.len);
-                    if (bret && ((upd.flags & LN_CNLUPD_FLAGS_DISABLE) == 0)) {
-                        //disable状態ではない
+                    if ( bret && ((upd.flags & LN_CNLUPD_FLAGS_DISABLE) == 0) &&
+                        (mpNodes[mNodeNum - 1].short_channel_id == upd.short_channel_id) ) {
+                        //disable状態ではない && channel_announcement.short_channel_idと一致
                         mpNodes[mNodeNum - 1].ninfo[idx].cltv_expiry_delta = upd.cltv_expiry_delta;
                         mpNodes[mNodeNum - 1].ninfo[idx].htlc_minimum_msat = upd.htlc_minimum_msat;
                         mpNodes[mNodeNum - 1].ninfo[idx].fee_base_msat = upd.fee_base_msat;
@@ -407,12 +408,14 @@ static bool loaddb(const char *pDbPath, const uint8_t *p1, const uint8_t *p2, bo
         if (memchr(key.mv_data, '\0', key.mv_size)) {
             continue;
         }
-        ret = mdb_dbi_open(txn_self, (const char *)key.mv_data, 0, &dbi2);
+        char *name = (char *)malloc(key.mv_size + 1);
+        memcpy(name, key.mv_data, key.mv_size);
+        name[key.mv_size] = '\0';
+        ret = mdb_dbi_open(txn_self, name, 0, &dbi2);
         if (ret == 0) {
             if (list) {
                 list++;
             } else {
-                const char *name = (const char *)key.mv_data;
                 ln_lmdb_dbtype_t dbtype = ln_lmdb_get_dbtype(name);
                 if (dbtype == LN_LMDB_DBTYPE_SELF) {
                     dumpit_self(txn_self, dbi2, p1, p2);
@@ -420,8 +423,9 @@ static bool loaddb(const char *pDbPath, const uint8_t *p1, const uint8_t *p2, bo
             }
             mdb_close(mdb_txn_env(txn_self), dbi2);
         } else {
-            fprintf(fp_err, "err1[%s]: %s\n", (const char *)key.mv_data, mdb_strerror(ret));
+            fprintf(fp_err, "err1[%s]: %s\n",name, mdb_strerror(ret));
         }
+        free(name);
     }
     mdb_cursor_close(cursor);
     mdb_txn_abort(txn_self);
@@ -449,12 +453,14 @@ static bool loaddb(const char *pDbPath, const uint8_t *p1, const uint8_t *p2, bo
         if (memchr(key.mv_data, '\0', key.mv_size)) {
             continue;
         }
-        ret = mdb_dbi_open(txn_node, (const char *)key.mv_data, 0, &dbi2);
+        char *name = (char *)malloc(key.mv_size + 1);
+        memcpy(name, key.mv_data, key.mv_size);
+        name[key.mv_size] = '\0';
+        ret = mdb_dbi_open(txn_node, name, 0, &dbi2);
         if (ret == 0) {
             if (list) {
                 list++;
             } else {
-                const char *name = (const char *)key.mv_data;
                 ln_lmdb_dbtype_t dbtype = ln_lmdb_get_dbtype(name);
                 if (dbtype == LN_LMDB_DBTYPE_CHANNEL_ANNO) {
                     dumpit_chan(txn_node, dbi2, dbi_skip);
@@ -462,8 +468,9 @@ static bool loaddb(const char *pDbPath, const uint8_t *p1, const uint8_t *p2, bo
             }
             mdb_close(mdb_txn_env(txn_node), dbi2);
         } else {
-            fprintf(fp_err, "err2[%s]: %s\n", (const char *)key.mv_data, mdb_strerror(ret));
+            fprintf(fp_err, "err2[%s]: %s\n", name, mdb_strerror(ret));
         }
+        free(name);
     }
     mdb_cursor_close(cursor);
     mdb_txn_abort(txn_node);
