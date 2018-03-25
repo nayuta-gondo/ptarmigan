@@ -33,4 +33,4 @@ addons:
     branch_pattern: coverity_scan
   
 script:
-  - make full
+  - script: if [ ${COVERITY_SCAN_BRANCH} != 1 ]; then make full ; fi
