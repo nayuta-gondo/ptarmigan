@@ -1,5 +1,32 @@
 # CHANGELOG
 
+## 2018/03/23
+
+* include [`nayutaco/bech32`](https://github.com/nayutaco/bech32)
+  * `make distclean && make full`
+* support `regtest` invoice
+  * cannot test creating
+* bugfix
+
+## 2018/03/17
+
+* remove `dumpprivkey`
+  * use `signrawtransaction`
+* revice signature module
+* update lib: bech32
+  * use new signature api
+  * rebuild with `make full`
+* allow `ucoincli -c <node_id>@<ipaddr>:<port>`
+* output `connection.log`
+* bugfix
+
+## 2018/03/13
+
+* tag: 2018-03-13
+  * DB version: -17
+* `ping`/`pong`のignoredチェック省略
+  * `c-lightning`がnon-zeroの値を入れているため(リリース時には削除されると思われるが、デフォルトでそうなっている)
+
 ## 2018/03/07
 
 * DB version : -17
@@ -18,7 +45,7 @@
 ## 2018/03/03
 
 * tag: 2018-03-03
-  * DB version : - 16
+  * DB version: -16
 
 ## 2018/02/21
 

@@ -41,6 +41,9 @@
 #define DBG_PRINT_CREATE
 #define DBG_PRINT_READ
 
+// #define M_PING_NONZERO_CHK
+// #define M_PONG_NONZERO_CHK
+
 
 /**************************************************************************
  * prototypes
@@ -184,8 +187,6 @@ bool HIDDEN ln_msg_error_read(ln_error_t *pMsg, const uint8_t *pData, uint16_t L
     int pos = sizeof(uint16_t);
 
     //        [32:channel-id]
-    DBG_PRINTF("channel_id:");
-    DUMPBIN(pData + pos, LN_SZ_CHANNEL_ID);
     pos += LN_SZ_CHANNEL_ID;
 
     //        [2:len]
@@ -193,11 +194,11 @@ bool HIDDEN ln_msg_error_read(ln_error_t *pMsg, const uint8_t *pData, uint16_t L
     pos += sizeof(uint16_t);
 
     //        [len:data]
-    DBG_PRINTF("data(%d): ", len);
-    DBG_PRINTF("%s\n", pData + pos);
     if (pMsg != NULL) {
         pMsg->len = len;
-        pMsg->p_data = (const char *)(pData + pos);
+        pMsg->p_data = (char *)M_MALLOC(len + 1);
+        memcpy(pMsg->p_data, pData + pos, len);
+        pMsg->p_data[len] = '\0';
     }
 
     pos += len;
@@ -283,12 +284,14 @@ bool HIDDEN ln_msg_ping_read(ln_ping_t *pMsg, const uint8_t *pData, uint16_t Len
     //ping_print(pMsg);
 #endif  //DBG_PRINT_READ
 
+#ifdef M_PING_NONZERO_CHK
     for (int lp = 0; lp < pMsg->byteslen; lp++) {
         if (*(pData + sizeof(uint16_t) + 4 + lp) != 0x00) {
             DBG_PRINTF("fail: contain not ZERO\n");
             return false;
         }
     }
+#endif  //M_PING_NONZERO_CHK
 
     assert(Len == sizeof(uint16_t) + 4 + pMsg->byteslen);
 
@@ -380,12 +383,14 @@ bool HIDDEN ln_msg_pong_read(ln_pong_t *pMsg, const uint8_t *pData, uint16_t Len
     //pong_print(pMsg);
 #endif  //DBG_PRINT_READ
 
+#ifdef M_PONG_NONZERO_CHK
     for (int lp = 0; lp < pMsg->byteslen; lp++) {
         if (*(pData + sizeof(uint16_t) + 2 + lp) != 0x00) {
             DBG_PRINTF("fail: contain not ZERO\n");
             return false;
         }
     }
+#endif  //M_PONG_NONZERO_CHK
 
     assert(Len == sizeof(uint16_t) + 2 + pMsg->byteslen);
 

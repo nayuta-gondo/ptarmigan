@@ -31,14 +31,18 @@
 #include <assert.h>
 
 #include "ln_db.h"
-#include "ln/ln_misc.h"
-#include "ln/ln_msg_setupctl.h"
-#include "ln/ln_msg_establish.h"
-#include "ln/ln_msg_close.h"
-#include "ln/ln_msg_normalope.h"
-#include "ln/ln_msg_anno.h"
-#include "ln/ln_node.h"
-#include "ln/ln_enc_auth.h"
+#include "ln_misc.h"
+#include "ln_msg_setupctl.h"
+#include "ln_msg_establish.h"
+#include "ln_msg_close.h"
+#include "ln_msg_normalope.h"
+#include "ln_msg_anno.h"
+#include "ln_node.h"
+#include "ln_enc_auth.h"
+#include "ln_onion.h"
+#include "ln_script.h"
+#include "ln_derkey.h"
+#include "ln_signer.h"
 
 //#define M_DBG_VERBOSE
 
@@ -89,31 +93,20 @@
 #define M_HTLCCHG_FF_SEND                       (1)
 #define M_HTLCCHG_FF_RECV                       (2)
 
-#define M_SECINDEX_INIT     ((uint64_t)0xffffffffffff)      ///< per-commitment secret生成用indexの初期値
-                                                            ///< https://github.com/lightningnetwork/lightning-rfc/blob/master/03-transactions.md#per-commitment-secret-requirements
-
 // ln_self_t.init_flag
 #define M_INIT_FLAG_SEND                    (0x01)
 #define M_INIT_FLAG_RECV                    (0x02)
-#define M_INIT_FLAG_INITED(flag)            (((flag) & (M_INIT_FLAG_SEND | M_INIT_FLAG_RECV)) == (M_INIT_FLAG_SEND | M_INIT_FLAG_RECV))
-#define M_INIT_FLAG_REEST_SEND              (0x04)
-#define M_INIT_FLAG_REEST_RECV              (0x08)
-#define M_INIT_FLAG_REESTED(flag)           (((flag) & (M_INIT_FLAG_REEST_SEND | M_INIT_FLAG_REEST_RECV)) == (M_INIT_FLAG_REEST_SEND | M_INIT_FLAG_REEST_RECV))
-
-// ln_self_t.flck_flag
-#define M_FLCK_FLAG_SEND                    (0x01)          ///< 1:funding_locked送信あり
-#define M_FLCK_FLAG_RECV                    (0x02)          ///< 1:funding_locked受信あり
-#define M_FLCK_FLAG_END                     (0x80)
+#define M_INIT_FLAG_EXCHNAGED(flag)         (((flag) & (M_INIT_FLAG_SEND | M_INIT_FLAG_RECV)) == (M_INIT_FLAG_SEND | M_INIT_FLAG_RECV))
 
 // ln_self_t.anno_flag
 #define M_ANNO_FLAG_SEND                    (0x01)          ///< 1:announcement_signatures送信あり
 #define M_ANNO_FLAG_RECV                    (0x02)          ///< 1:announcement_signatures受信あり
-#define M_ANNO_FLAG_END                     (0x80)
+#define M_ANNO_FLAG_END                     (0x80)          ///< 送受信完了後の処理済み
 
 // ln_self_t.shutdown_flag
 #define M_SHDN_FLAG_SEND                    (0x01)          ///< 1:shutdown送信あり
 #define M_SHDN_FLAG_RECV                    (0x02)          ///< 1:shutdown受信あり
-#define M_SHDN_FLAG_END                     (M_SHDN_FLAG_SEND | M_SHDN_FLAG_RECV)
+#define M_SHDN_FLAG_EXCHANGED(flag)         (((flag) & (M_SHDN_FLAG_SEND | M_SHDN_FLAG_RECV)) == (M_SHDN_FLAG_SEND | M_SHDN_FLAG_RECV))
 
 #define M_PONG_MISSING                      (50)            ///< pongが返ってこないエラー上限
 
@@ -151,8 +144,6 @@ static bool recv_accept_channel(ln_self_t *self, const uint8_t *pData, uint16_t 
 static bool recv_funding_created(ln_self_t *self, const uint8_t *pData, uint16_t Len);
 static bool recv_funding_signed(ln_self_t *self, const uint8_t *pData, uint16_t Len);
 static bool recv_funding_locked(ln_self_t *self, const uint8_t *pData, uint16_t Len);
-static bool recv_funding_locked_first(ln_self_t *self);
-static bool recv_funding_locked_reestablish(ln_self_t *self);
 static bool recv_shutdown(ln_self_t *self, const uint8_t *pData, uint16_t Len);
 static bool recv_closing_signed(ln_self_t *self, const uint8_t *pData, uint16_t Len);
 static bool recv_update_add_htlc(ln_self_t *self, const uint8_t *pData, uint16_t Len);
@@ -166,6 +157,7 @@ static bool recv_channel_reestablish(ln_self_t *self, const uint8_t *pData, uint
 static bool recv_announcement_signatures(ln_self_t *self, const uint8_t *pData, uint16_t Len);
 static bool recv_channel_announcement(ln_self_t *self, const uint8_t *pData, uint16_t Len);
 static bool recv_channel_update(ln_self_t *self, const uint8_t *pData, uint16_t Len);
+static void start_funding_wait(ln_self_t *self, bool bSendTx);
 static bool create_funding_tx(ln_self_t *self);
 static bool create_to_local(ln_self_t *self,
                     ln_close_force_t *pClose,
@@ -178,22 +170,18 @@ static bool create_to_remote(ln_self_t *self,
                     uint8_t **pp_htlc_sigs,
                     uint32_t to_self_delay,
                     uint64_t dust_limit_sat);
-static bool create_closing_tx(ln_self_t *self, ucoin_tx_t *pTx, bool bVerify);
-static bool create_channelkeys(ln_self_t *self);
+static bool create_closing_tx(ln_self_t *self, ucoin_tx_t *pTx, uint64_t FeeSat, bool bVerify);
 static bool create_local_channel_announcement(ln_self_t *self);
-static void update_percommit_secret(ln_self_t *self);
 static bool create_channel_update(ln_self_t *self, ln_cnl_update_t *pUpd, ucoin_buf_t *pCnlUpd, uint32_t TimeStamp, uint8_t Flag);
-static void get_prev_percommit_secret(ln_self_t *self, uint8_t *p_prev_secret);
 static bool store_peer_percommit_secret(ln_self_t *self, const uint8_t *p_prev_secret);
-static void proc_established(ln_self_t *self);
-static void proc_announce_sigsed(ln_self_t *self);
+static bool proc_announce_sigsed(ln_self_t *self);
 static bool chk_peer_node(ln_self_t *self);
-static bool get_nodeid(uint8_t *pNodeId, uint64_t short_channel_id, uint8_t Dir);;
+static bool get_nodeid(ln_self_t *self, uint8_t *pNodeId, uint64_t short_channel_id, uint8_t Dir);;
 static void clear_htlc(ln_self_t *self, ln_update_add_htlc_t *p_add);
 static bool search_preimage(uint8_t *pPreImage, const uint8_t *pHtlcHash);
 static bool chk_channelid(const uint8_t *recv_id, const uint8_t *mine_id);
 static void close_alloc(ln_close_force_t *pClose, int Num);
-static void free_establish(ln_self_t *self);
+static void free_establish(ln_self_t *self, bool bEndEstablish);
 static ucoin_keys_sort_t sort_nodeid(ln_self_t *self);
 
 
@@ -242,7 +230,7 @@ static unsigned long mDebug;
  * public functions
  **************************************************************************/
 
-bool ln_init(ln_self_t *self, ln_node_t *node, const uint8_t *pSeed, const ln_anno_prm_t *pAnnoPrm, ln_callback_t pFunc)
+bool ln_init(ln_self_t *self, const uint8_t *pSeed, const ln_anno_prm_t *pAnnoPrm, ln_callback_t pFunc)
 {
     DBG_PRINTF("BEGIN : pSeed=%p\n", pSeed);
 
@@ -276,7 +264,6 @@ bool ln_init(ln_self_t *self, ln_node_t *node, const uint8_t *pSeed, const ln_an
         ucoin_buf_init(&self->cnl_add_htlc[idx].shared_secret);
     }
 
-    //クリア
     self->lfeature_remote = 0;
 
     self->p_callback = pFunc;
@@ -288,12 +275,8 @@ bool ln_init(ln_self_t *self, ln_node_t *node, const uint8_t *pSeed, const ln_an
     DBG_PRINTF("fee_prop_millionths=%" PRIu32 "\n", self->anno_prm.fee_prop_millionths);
 
     //seed
-    self->storage_index = M_SECINDEX_INIT;
-    self->peer_storage_index = M_SECINDEX_INIT;
-    if (pSeed) {
-        memcpy(self->storage_seed, pSeed, LN_SZ_SEED);
-        ln_derkey_storage_init(&self->peer_storage);
-    }
+    ln_signer_init(self, pSeed);
+    self->peer_storage_index = LN_SECINDEX_INIT;
 
     DBG_PRINTF("END\n");
 
@@ -305,7 +288,7 @@ void ln_term(ln_self_t *self)
 {
     channel_clear(self);
 
-    memset(self->storage_seed, 0, UCOIN_SZ_PRIVKEY);
+    ln_signer_term(self);
     for (int idx = 0; idx < LN_HTLC_MAX; idx++) {
         self->cnl_add_htlc[idx].p_onion_route = NULL;
         ucoin_buf_free(&self->cnl_add_htlc[idx].shared_secret);
@@ -386,10 +369,11 @@ bool ln_set_funding_wif(ln_self_t *self, const char *pWif)
 
 void ln_set_short_channel_id_param(ln_self_t *self, uint32_t Height, uint32_t Index, uint32_t FundingIndex)
 {
-    self->short_channel_id = ln_misc_calc_short_channel_id(Height, Index, FundingIndex);
-
-    //announcement_signatures受信用
-    create_local_channel_announcement(self);
+    uint64_t short_channel_id = ln_misc_calc_short_channel_id(Height, Index, FundingIndex);
+    if (self->short_channel_id == 0) {
+        self->short_channel_id = short_channel_id;
+        ln_db_self_save(self);
+    }
 }
 
 
@@ -494,14 +478,15 @@ bool ln_recv(ln_self_t *self, const uint8_t *pData, uint16_t Len)
     uint16_t type = ln_misc_get16be(pData);
 
     //DBG_PRINTF("short_channel_id= %" PRIx64 "\n", self->short_channel_id);
-    if ((type != MSGTYPE_INIT) && (!M_INIT_FLAG_INITED(self->init_flag))) {
+    if ((type != MSGTYPE_INIT) && (!M_INIT_FLAG_EXCHNAGED(self->init_flag))) {
         self->err = LNERR_INV_STATE;
         DBG_PRINTF("fail: no init received : %04x\n", type);
         return false;
     }
     if ( (type != MSGTYPE_CLOSING_SIGNED) &&
          !MSGTYPE_IS_ANNOUNCE(type) && !MSGTYPE_IS_PINGPONG(type) &&
-         ((self->shutdown_flag & M_SHDN_FLAG_END) == M_SHDN_FLAG_END) ) {
+         (type != MSGTYPE_ERROR) &&
+         M_SHDN_FLAG_EXCHANGED(self->shutdown_flag) ) {
         self->err = LNERR_INV_STATE;
         DBG_PRINTF("fail: not closing_signed received : %04x\n", type);
         return false;
@@ -579,34 +564,41 @@ bool ln_create_init(ln_self_t *self, ucoin_buf_t *pInit, bool bHaveCnl)
 
 void ln_flag_proc(ln_self_t *self)
 {
-    proc_established(self);
-    proc_announce_sigsed(self);
+    bool ret = proc_announce_sigsed(self);
+    if (ret) {
+        ln_db_self_save(self);
+    }
 }
 
 
 //channel_reestablish作成
 bool ln_create_channel_reestablish(ln_self_t *self, ucoin_buf_t *pReEst)
 {
-    if (self->init_flag & M_INIT_FLAG_REEST_SEND) {
-        self->err = LNERR_INV_STATE;
-        DBG_PRINTF("fail: channel_reestablish already sent.\n");
-        return false;
-    }
-
     ln_channel_reestablish_t msg;
     msg.p_channel_id = self->channel_id;
-    msg.next_local_commitment_number = self->commit_num;
+    //commitment_numberを0で送信することはないため、0の場合は+1する
+    msg.next_local_commitment_number = self->commit_num + ((self->commit_num == 0) ? 1 : 0);
     msg.next_remote_revocation_number = self->remote_revoke_num;
 
     bool ret = ln_msg_channel_reestablish_create(pReEst, &msg);
-    if (ret) {
-        self->init_flag |= M_INIT_FLAG_REEST_SEND;
-    }
-    if ( ret && M_INIT_FLAG_REESTED(self->init_flag) &&
-            (self->commit_num == 1) && (self->remote_commit_num == 1) ) {
-        DBG_PRINTF("both commit_num == 1 ==> send funding_locked\n");
-        ret = ln_funding_tx_stabled(self);
-    }
+    return ret;
+}
+
+
+bool ln_check_need_funding_locked(const ln_self_t *self)
+{
+    return (self->commit_num == 1) && (self->remote_commit_num == 1);
+}
+
+
+bool ln_create_funding_locked(ln_self_t *self, ucoin_buf_t *pLocked)
+{
+    //funding_locked
+    ln_funding_locked_t cnl_funding_locked;
+    cnl_funding_locked.p_channel_id = self->channel_id;
+    cnl_funding_locked.p_per_commitpt = self->funding_local.keys[MSG_FUNDIDX_PER_COMMIT].pub;
+    bool ret = ln_msg_funding_locked_create(pLocked, &cnl_funding_locked);
+
     return ret;
 }
 
@@ -619,7 +611,7 @@ bool ln_create_channel_reestablish(ln_self_t *self, ucoin_buf_t *pReEst)
 bool ln_create_open_channel(ln_self_t *self, ucoin_buf_t *pOpen,
             const ln_fundin_t *pFundin, uint64_t FundingSat, uint64_t PushSat, uint32_t FeeRate)
 {
-    if (!M_INIT_FLAG_INITED(self->init_flag)) {
+    if (!M_INIT_FLAG_EXCHNAGED(self->init_flag)) {
         self->err = LNERR_INV_STATE;
         DBG_PRINTF("fail: no init finished\n");
         return false;
@@ -636,33 +628,20 @@ bool ln_create_open_channel(ln_self_t *self, ucoin_buf_t *pOpen,
         return false;
     }
 
-    //TODO: 仮チャネルID
+    //仮チャネルID
     ucoin_util_random(self->channel_id, LN_SZ_CHANNEL_ID);
 
     //鍵生成
-    bool ret = create_channelkeys(self);
+    bool ret = ln_signer_create_channelkeys(self);
     if (!ret) {
         self->err = LNERR_INV_PRIVKEY;
-        DBG_PRINTF("fail: create_channelkeys\n");
+        DBG_PRINTF("fail: ln_signer_create_channelkeys\n");
         return false;
     }
-
-    //funding鍵設定要求
-    //アプリからの設定漏れがチェックできるように、funding鍵を0で初期化
-    memset(&self->funding_local.keys[MSG_FUNDIDX_FUNDING], 0, sizeof(self->funding_local.keys[MSG_FUNDIDX_FUNDING]));
-    (*self->p_callback)(self, LN_CB_FINDINGWIF_REQ, NULL);
-    ret = ucoin_keys_chkpriv(self->funding_local.keys[MSG_FUNDIDX_FUNDING].priv);
-    if (!ret) {
-        self->err = LNERR_INV_PRIVKEY;
-        DBG_PRINTF("fail: no funding key\n");
-        return false;
-    }
-
-    ln_print_keys(PRINTOUT, &self->funding_local, &self->funding_remote);
 
     //funding_tx作成用に保持
     assert(self->p_establish->p_fundin == NULL);
-    self->p_establish->p_fundin = (ln_fundin_t *)M_MALLOC(sizeof(ln_fundin_t));
+    self->p_establish->p_fundin = (ln_fundin_t *)M_MALLOC(sizeof(ln_fundin_t));     //free: free_establish()
     memcpy(self->p_establish->p_fundin, pFundin, sizeof(ln_fundin_t));
 
     //open_channel
@@ -699,54 +678,10 @@ bool ln_create_open_channel(ln_self_t *self, ucoin_buf_t *pOpen,
 }
 
 
-//funding_txをブロードキャストして安定した後に呼ぶ
-//  funding_locked送信
-/*
- * funding_lockedはお互い送信し合うことになる。
- *      open_channel送信側: funding_signed受信→funding_tx安定待ち→funding_locked送信→funding_locked受信→完了
- *      open_channel受信側: funding_locked受信→funding_tx安定待ち→完了
- *
- * funding_tx安定待ちで一度シーケンスが止まる。
- */
-bool ln_funding_tx_stabled(ln_self_t *self)
+void ln_open_announce_channel_clr(ln_self_t *self)
 {
-    DBG_PRINTF("BEGIN\n");
-
-    if (!M_INIT_FLAG_INITED(self->init_flag)) {
-        self->err = LNERR_INV_STATE;
-        DBG_PRINTF("fail: no init finished\n");
-        return false;
-    }
-    if (self->short_channel_id == 0) {
-        self->err = LNERR_NO_CHANNEL;
-        DBG_PRINTF("fail: not stabled\n");
-        return false;
-    }
-
-    if (!M_INIT_FLAG_REESTED(self->init_flag)) {
-        //per-commit-secret更新
-        update_percommit_secret(self);
-    } else {
-        DBG_PRINTF("reestablished\n");
-        ln_misc_update_scriptkeys(&self->funding_local, &self->funding_remote);
-    }
-
-    //funding_locked
-    ucoin_buf_t buf;
-    ln_funding_locked_t cnl_funding_locked;
-    cnl_funding_locked.p_channel_id = self->channel_id;
-    cnl_funding_locked.p_per_commitpt = self->funding_local.keys[MSG_FUNDIDX_PER_COMMIT].pub;
-    ln_msg_funding_locked_create(&buf, &cnl_funding_locked);
-
-    //送信
-    (*self->p_callback)(self, LN_CB_SEND_REQ, &buf);
-    ucoin_buf_free(&buf);
-
-    self->flck_flag |= M_FLCK_FLAG_SEND;
-
+    self->fund_flag &= ~LN_FUNDFLAG_ANNO_CH;
     ln_db_self_save(self);
-
-    return true;
 }
 
 
@@ -759,8 +694,7 @@ bool ln_create_announce_signs(ln_self_t *self, ucoin_buf_t *pBufAnnoSigns)
     uint8_t *p_sig_btc;
 
     if (self->cnl_anno.buf == NULL) {
-        DBG_PRINTF("fail: no funding_locked\n");
-        return false;
+        create_local_channel_announcement(self);
     }
 
     //  self->cnl_annoはfundindg_lockedメッセージ作成時に行っている
@@ -853,7 +787,7 @@ bool ln_create_shutdown(ln_self_t *self, ucoin_buf_t *pShutdown)
 {
     DBG_PRINTF("BEGIN\n");
 
-    if (!M_INIT_FLAG_INITED(self->init_flag)) {
+    if (!M_INIT_FLAG_EXCHNAGED(self->init_flag)) {
         self->err = LNERR_INV_STATE;
         DBG_PRINTF("fail: no init finished\n");
         return false;
@@ -918,6 +852,8 @@ bool ln_create_close_force_tx(ln_self_t *self, ln_close_force_t *pClose)
 {
     DBG_PRINTF("BEGIN\n");
 
+    int flocked = (self->commit_num != 0) ? 1 : 0;
+
     //to_local送金先設定確認
     assert(self->shutdown_scriptpk_local.len > 0);
 
@@ -929,11 +865,9 @@ bool ln_create_close_force_tx(ln_self_t *self, ln_close_force_t *pClose)
 
     //local
     //  storage_seedは、次回送信するnext_per_commitment_secret用の値が入っている。
-    //  現在のnext_per_commitment_secret用の値は storage_seed+1。
-    //  現在のper_commitment_secret用の値は、storage_seed+2 となる。
-    //DBG_PRINTF("LI=%" PRIx64 "\n", self->storage_index);
-    ln_derkey_create_secret(self->funding_local.keys[MSG_FUNDIDX_PER_COMMIT].priv, self->storage_seed, self->storage_index + 2);
-    ucoin_keys_priv2pub(self->funding_local.keys[MSG_FUNDIDX_PER_COMMIT].pub, self->funding_local.keys[MSG_FUNDIDX_PER_COMMIT].priv);
+    //  現在のnext_per_commitment_secret用の値は index+1。
+    //  現在のper_commitment_secret用の値は、index+2 となる。
+    ln_signer_keys_update(self, 1 + flocked);
     //DBG_PRINTF("I+2: "); DUMPBIN(self->funding_local.keys[MSG_FUNDIDX_PER_COMMIT].pub, UCOIN_SZ_PUBKEY);
     //remote
     //DBG_PRINTF("RI=%" PRIx64 "\n", self->peer_storage_index);
@@ -943,7 +877,7 @@ bool ln_create_close_force_tx(ln_self_t *self, ln_close_force_t *pClose)
     //update keys
     ln_misc_update_scriptkeys(&self->funding_local, &self->funding_remote);
     //commitment number(for obscured commitment number)
-    self->commit_num--;
+    self->commit_num -= flocked;
 
     //[0]commit_tx, [1]to_local, [2]to_remote, [3...]HTLC
     close_alloc(pClose, LN_CLOSE_IDX_HTLC + self->commit_local.htlc_num);
@@ -956,11 +890,13 @@ bool ln_create_close_force_tx(ln_self_t *self, ln_close_force_t *pClose)
         ln_free_close_force_tx(pClose);
     }
 
-    self->commit_num++;
+    self->commit_num += flocked;
 
     self->funding_local.keys[MSG_FUNDIDX_PER_COMMIT] = bak_key;
     memcpy(self->funding_remote.pubkeys[MSG_FUNDIDX_PER_COMMIT], bak_pubkey, sizeof(bak_pubkey));
-    ucoin_keys_priv2pub(self->funding_local.keys[MSG_FUNDIDX_PER_COMMIT].pub, self->funding_local.keys[MSG_FUNDIDX_PER_COMMIT].priv);
+    ucoin_keys_priv2pub(
+        self->funding_local.keys[MSG_FUNDIDX_PER_COMMIT].pub,
+        self->funding_local.keys[MSG_FUNDIDX_PER_COMMIT].priv);
     ln_misc_update_scriptkeys(&self->funding_local, &self->funding_remote);
 
     return ret;
@@ -981,9 +917,7 @@ bool ln_create_closed_tx(ln_self_t *self, ln_close_force_t *pClose)
     //  単なる確認用。
 
     //local
-    //DBG_PRINTF("LI=%" PRIx64 "\n", self->storage_index);
-    ln_derkey_create_secret(self->funding_local.keys[MSG_FUNDIDX_PER_COMMIT].priv, self->storage_seed, self->storage_index + 2);
-    ucoin_keys_priv2pub(self->funding_local.keys[MSG_FUNDIDX_PER_COMMIT].pub, self->funding_local.keys[MSG_FUNDIDX_PER_COMMIT].priv);
+    ln_signer_keys_update(self, 2);
     //DBG_PRINTF("I+2: "); DUMPBIN(self->funding_local.keys[MSG_FUNDIDX_PER_COMMIT].pub, UCOIN_SZ_PUBKEY);
 
     //remote
@@ -1067,7 +1001,7 @@ bool ln_close_ugly(ln_self_t *self, const ucoin_tx_t *pRevokedTx, void *pDbParam
 
     //remote per_commitment_secretの復元
     ucoin_buf_alloc(&self->revoked_sec, UCOIN_SZ_PRIVKEY);
-    bool ret = ln_derkey_storage_get_secret(self->revoked_sec.buf, &self->peer_storage, (uint64_t)(M_SECINDEX_INIT - commit_num));
+    bool ret = ln_derkey_storage_get_secret(self->revoked_sec.buf, &self->peer_storage, (uint64_t)(LN_SECINDEX_INIT - commit_num));
     assert(ret);
     ucoin_keys_priv2pub(self->funding_remote.pubkeys[MSG_FUNDIDX_PER_COMMIT], self->revoked_sec.buf);
     //DBG_PRINTF2("  pri:");
@@ -1076,8 +1010,7 @@ bool ln_close_ugly(ln_self_t *self, const ucoin_tx_t *pRevokedTx, void *pDbParam
     //DUMPBIN(self->funding_remote.pubkeys[MSG_FUNDIDX_PER_COMMIT], UCOIN_SZ_PUBKEY);
 
     //local per_commitment_secretの復元
-    ln_derkey_create_secret(self->funding_local.keys[MSG_FUNDIDX_PER_COMMIT].priv, self->storage_seed, (uint64_t)(M_SECINDEX_INIT - commit_num));
-    ucoin_keys_priv2pub(self->funding_local.keys[MSG_FUNDIDX_PER_COMMIT].pub, self->funding_local.keys[MSG_FUNDIDX_PER_COMMIT].priv);
+    ln_signer_keys_update_force(self, (uint64_t)(LN_SECINDEX_INIT - commit_num));
 
     //鍵の復元
     ln_misc_update_scriptkeys(&self->funding_local, &self->funding_remote);
@@ -1155,7 +1088,7 @@ bool ln_create_add_htlc(ln_self_t *self,
 {
     DBG_PRINTF("BEGIN\n");
 
-    if (!M_INIT_FLAG_INITED(self->init_flag)) {
+    if (!M_INIT_FLAG_EXCHNAGED(self->init_flag)) {
         self->err = LNERR_INV_STATE;
         DBG_PRINTF("fail: no init finished\n");
         return false;
@@ -1251,7 +1184,7 @@ bool ln_create_fulfill_htlc(ln_self_t *self, ucoin_buf_t *pFulfill, uint64_t id,
 {
     DBG_PRINTF("BEGIN\n");
 
-    if (!M_INIT_FLAG_INITED(self->init_flag)) {
+    if (!M_INIT_FLAG_EXCHNAGED(self->init_flag)) {
         self->err = LNERR_INV_STATE;
         DBG_PRINTF("fail: no init finished\n");
         return false;
@@ -1313,7 +1246,7 @@ bool ln_create_fail_htlc(ln_self_t *self, ucoin_buf_t *pFail, uint64_t id, const
 {
     DBG_PRINTF("BEGIN\n");
 
-    if (!M_INIT_FLAG_INITED(self->init_flag)) {
+    if (!M_INIT_FLAG_EXCHNAGED(self->init_flag)) {
         self->err = LNERR_INV_STATE;
         DBG_PRINTF("fail: no init finished\n");
         return false;
@@ -1366,7 +1299,7 @@ bool ln_create_commit_signed(ln_self_t *self, ucoin_buf_t *pCommSig)
 
     bool ret;
 
-    if (!M_INIT_FLAG_INITED(self->init_flag)) {
+    if (!M_INIT_FLAG_EXCHNAGED(self->init_flag)) {
         self->err = LNERR_INV_STATE;
         DBG_PRINTF("fail: no init finished\n");
         return false;
@@ -1472,20 +1405,14 @@ bool ln_create_tolocal_spent(const ln_self_t *self, ucoin_tx_t *pTx, uint64_t Va
     }
     if (!bRevoked) {
         //<delayed_secretkey>
-        ln_derkey_privkey(signkey.priv,
-                    self->funding_local.keys[MSG_FUNDIDX_DELAYED].pub,
-                    self->funding_local.keys[MSG_FUNDIDX_PER_COMMIT].pub,
-                    self->funding_local.keys[MSG_FUNDIDX_DELAYED].priv);
-        ucoin_keys_priv2pub(signkey.pub, signkey.priv);
+        ln_signer_get_secret(self, &signkey, MSG_FUNDIDX_DELAYED,
+            self->funding_local.keys[MSG_FUNDIDX_PER_COMMIT].pub);
         assert(memcmp(signkey.pub, self->funding_local.scriptpubkeys[MSG_SCRIPTIDX_DELAYED], UCOIN_SZ_PUBKEY) == 0);
     } else {
         //<revocationsecretkey>
-        ln_derkey_revocationprivkey(signkey.priv,
-                    self->funding_local.keys[MSG_FUNDIDX_REVOCATION].pub,
+        ln_signer_get_revokesec(self, &signkey,
                     self->funding_remote.pubkeys[MSG_FUNDIDX_PER_COMMIT],
-                    self->funding_local.keys[MSG_FUNDIDX_REVOCATION].priv,
                     self->revoked_sec.buf);
-        ucoin_keys_priv2pub(signkey.pub, signkey.priv);
     }
     //DBG_PRINTF("key-priv: ");
     //DUMPBIN(signkey.priv, UCOIN_SZ_PRIVKEY);
@@ -1527,11 +1454,8 @@ bool ln_create_toremote_spent(const ln_self_t *self, ucoin_tx_t *pTx, uint64_t V
     }
     //<remotesecretkey>
     //  revoked transaction close後はremotekeyも当時のものになっているため、同じ処理でよい
-    ln_derkey_privkey(signkey.priv,
-                self->funding_local.keys[MSG_FUNDIDX_PAYMENT].pub,
-                self->funding_remote.pubkeys[MSG_FUNDIDX_PER_COMMIT],
-                self->funding_local.keys[MSG_FUNDIDX_PAYMENT].priv);
-    ucoin_keys_priv2pub(signkey.pub, signkey.priv);
+    ln_signer_get_secret(self, &signkey, MSG_FUNDIDX_PAYMENT,
+        self->funding_remote.pubkeys[MSG_FUNDIDX_PER_COMMIT]);
     assert(memcmp(signkey.pub, self->funding_remote.scriptpubkeys[MSG_SCRIPTIDX_REMOTEKEY], UCOIN_SZ_PUBKEY) == 0);
     //DBG_PRINTF("key-priv: ");
     //DUMPBIN(signkey.priv, UCOIN_SZ_PRIVKEY);
@@ -1539,7 +1463,7 @@ bool ln_create_toremote_spent(const ln_self_t *self, ucoin_tx_t *pTx, uint64_t V
     //DUMPBIN(signkey.pub, UCOIN_SZ_PUBKEY);
 
     //vinは1つしかない
-    ret = ucoin_util_sign_p2wpkh(pTx, 0, Value, &signkey);
+    ret = ln_signer_p2wpkh(pTx, 0, Value, &signkey);
 
 LABEL_EXIT:
     return ret;
@@ -1558,16 +1482,13 @@ bool ln_create_revokedhtlc_spent(const ln_self_t *self, ucoin_tx_t *pTx, uint64_
     ln_create_htlc_tx(pTx, Value - fee, &self->shutdown_scriptpk_local, self->p_revoked_type[WitIndex], 0, pTxid, Index);
 
     ucoin_util_keys_t signkey;
-    ln_derkey_revocationprivkey(signkey.priv,
-                    self->funding_local.keys[MSG_FUNDIDX_REVOCATION].pub,
+    ln_signer_get_revokesec(self, &signkey,
                     self->funding_remote.pubkeys[MSG_FUNDIDX_PER_COMMIT],
-                    self->funding_local.keys[MSG_FUNDIDX_REVOCATION].priv,
                     self->revoked_sec.buf);
-    ucoin_keys_priv2pub(signkey.pub, signkey.priv);
-    DBG_PRINTF("key-priv: ");
-    DUMPBIN(signkey.priv, UCOIN_SZ_PRIVKEY);
-    DBG_PRINTF("key-pub : ");
-    DUMPBIN(signkey.pub, UCOIN_SZ_PUBKEY);
+    // DBG_PRINTF("key-priv: ");
+    // DUMPBIN(signkey.priv, UCOIN_SZ_PRIVKEY);
+    // DBG_PRINTF("key-pub : ");
+    // DUMPBIN(signkey.pub, UCOIN_SZ_PUBKEY);
 
     ucoin_buf_t buf_sig;
     ln_htlcsign_t htlcsign = HTLCSIGN_NONE;
@@ -1745,11 +1666,10 @@ static void channel_clear(ln_self_t *self)
     }
 
     memset(self->peer_node_id, 0, UCOIN_SZ_PUBKEY);
-    self->flck_flag = 0;
     self->anno_flag = 0;
     self->shutdown_flag = 0;
 
-    free_establish(self);
+    free_establish(self, true);
 }
 
 
@@ -1810,9 +1730,15 @@ static bool recv_error(ln_self_t *self, const uint8_t *pData, uint16_t Len)
 
     self->err = LNERR_MSG_ERROR;
 
+    if (ln_is_funding(self)) {
+        DBG_PRINTF("stop funding\n");
+        free_establish(self, false);
+    }
+
     ln_error_t err;
     ln_msg_error_read(&err, pData, Len);
     (*self->p_callback)(self, LN_CB_ERROR, &err);
+    M_FREE(err.p_data);
 
     return true;
 }
@@ -1907,26 +1833,18 @@ static bool recv_open_channel(ln_self_t *self, const uint8_t *pData, uint16_t Le
     self->commit_remote.to_self_delay = open_ch->to_self_delay;
     self->commit_remote.dust_limit_sat = open_ch->dust_limit_sat;
 
+    //first_per_commitment_pointは初回revoke_and_ackのper_commitment_secretに対応する
+    memcpy(self->funding_remote.prev_percommit, self->funding_remote.pubkeys[MSG_FUNDIDX_PER_COMMIT], UCOIN_SZ_PUBKEY);
+
     self->funding_sat = open_ch->funding_sat;
     self->feerate_per_kw = open_ch->feerate_per_kw;
     self->our_msat = open_ch->push_msat;
     self->their_msat = LN_SATOSHI2MSAT(open_ch->funding_sat) - open_ch->push_msat;
 
     //鍵生成
-    ret = create_channelkeys(self);
+    ret = ln_signer_create_channelkeys(self);
     if (!ret) {
-        DBG_PRINTF("fail: create_channelkeys\n");
-        return false;
-    }
-
-    //funding鍵設定要求
-    //アプリからの設定漏れがチェックできるように、funding鍵を0で初期化
-    memset(&self->funding_local.keys[MSG_FUNDIDX_FUNDING], 0, sizeof(self->funding_local.keys[MSG_FUNDIDX_FUNDING]));
-    (*self->p_callback)(self, LN_CB_FINDINGWIF_REQ, NULL);
-    ret = ucoin_keys_chkpriv(self->funding_local.keys[MSG_FUNDIDX_FUNDING].priv);
-    if (!ret) {
-        self->err = LNERR_INV_PRIVKEY;
-        DBG_PRINTF("fail: no funding key\n");
+        DBG_PRINTF("fail: ln_signer_create_channelkeys\n");
         return false;
     }
 
@@ -2018,6 +1936,9 @@ static bool recv_accept_channel(ln_self_t *self, const uint8_t *pData, uint16_t 
     self->commit_remote.in_flight_msat = acc_ch->max_htlc_value_in_flight_msat;
     self->commit_remote.to_self_delay = acc_ch->to_self_delay;
     self->commit_remote.dust_limit_sat = acc_ch->dust_limit_sat;
+
+    //first_per_commitment_pointは初回revoke_and_ackのper_commitment_secretに対応する
+    memcpy(self->funding_remote.prev_percommit, self->funding_remote.pubkeys[MSG_FUNDIDX_PER_COMMIT], UCOIN_SZ_PUBKEY);
 
     //スクリプト用鍵生成
     ln_misc_update_scriptkeys(&self->funding_local, &self->funding_remote);
@@ -2141,13 +2062,7 @@ static bool recv_funding_created(ln_self_t *self, const uint8_t *pData, uint16_t
     ucoin_buf_free(&buf_bolt);
 
     //funding_tx安定待ち(シーケンスの再開はアプリ指示)
-    self->short_channel_id = 0;
-    self->remote_commit_num = 1;
-    ln_cb_funding_t funding;
-    funding.p_tx_funding = NULL;
-    funding.p_txid = self->funding_local.txid;
-    funding.b_send = false; //sendrawtransactionしない
-    (*self->p_callback)(self, LN_CB_FUNDINGTX_WAIT, &funding);
+    start_funding_wait(self, false);
 
     DBG_PRINTF("END\n");
     return true;
@@ -2198,13 +2113,7 @@ static bool recv_funding_signed(ln_self_t *self, const uint8_t *pData, uint16_t 
     }
 
     //funding_tx安定待ち(シーケンスの再開はアプリ指示)
-    self->short_channel_id = 0;
-    self->remote_commit_num = 1;
-    ln_cb_funding_t funding;
-    funding.p_tx_funding = &self->tx_funding;
-    funding.p_txid = self->funding_local.txid;
-    funding.b_send = true;  //sendrawtransactionする
-    (*self->p_callback)(self, LN_CB_FUNDINGTX_WAIT, &funding);
+    start_funding_wait(self, true);
 
     DBG_PRINTF("END\n");
     return ret;
@@ -2242,73 +2151,23 @@ static bool recv_funding_locked(ln_self_t *self, const uint8_t *pData, uint16_t 
         return false;
     }
 
-    if (M_INIT_FLAG_REESTED(self->init_flag)) {
-        if (memcmp(self->funding_remote.pubkeys[MSG_FUNDIDX_PER_COMMIT], per_commitpt, UCOIN_SZ_PUBKEY) == 0) {
-            DBG_PRINTF("OK: same current per_commitment_point\n");
-        } else {
-            DBG_PRINTF("fail?: mismatch current per_commitment_point\n");
-            DBG_PRINTF("current: ");
-            DUMPBIN(self->funding_remote.pubkeys[MSG_FUNDIDX_PER_COMMIT], UCOIN_SZ_PUBKEY);
-            DBG_PRINTF("received: ");
-            DUMPBIN(per_commitpt, UCOIN_SZ_PUBKEY);
-        }
-        ret = recv_funding_locked_reestablish(self);
-        if (ret) {
-            ln_print_keys(PRINTOUT, &self->funding_local, &self->funding_remote);
-        }
-    } else {
-        //Establish直後 or Establish直後のreestablish
-        DBG_PRINTF("after Established\n");
-        const uint8_t ZERO[UCOIN_SZ_PUBKEY] = {0};
-        if (memcmp(ZERO, self->funding_remote.prev_percommit, sizeof(ZERO)) == 0) {
-            //reestablishの場合、prev_percommitは設定済み
-            memcpy(self->funding_remote.prev_percommit, self->funding_remote.pubkeys[MSG_FUNDIDX_PER_COMMIT], UCOIN_SZ_PUBKEY);
-        }
-        memcpy(self->funding_remote.pubkeys[MSG_FUNDIDX_PER_COMMIT], per_commitpt, UCOIN_SZ_PUBKEY);
-        ret = recv_funding_locked_first(self);
-        ln_misc_update_scriptkeys(&self->funding_local, &self->funding_remote);
-    }
-    if (ret) {
-        ln_db_self_save(self);
-    }
+    DBG_PRINTF("prev: ");
+    DUMPBIN(self->funding_remote.pubkeys[MSG_FUNDIDX_PER_COMMIT], UCOIN_SZ_PUBKEY);
+    DBG_PRINTF("next: ");
+    DUMPBIN(per_commitpt, UCOIN_SZ_PUBKEY);
+
+    //prev_percommitはrevoke_and_ackでのみ更新する
+    memcpy(self->funding_remote.pubkeys[MSG_FUNDIDX_PER_COMMIT], per_commitpt, UCOIN_SZ_PUBKEY);
+
+    //funding中終了
+    free_establish(self, true);
+
+    ln_misc_update_scriptkeys(&self->funding_local, &self->funding_remote);
+    ln_db_self_save(self);
+
+    (*self->p_callback)(self, LN_CB_FUNDINGLOCKED_RECV, NULL);
 
     DBG_PRINTF("END\n");
-    return ret;
-}
-
-
-static bool recv_funding_locked_first(ln_self_t *self)
-{
-    DBG_PRINTF("\n");
-
-    //commitment numberは0から始まる
-    //  BOLT#0
-    //  https://github.com/lightningnetwork/lightning-rfc/blob/master/00-introduction.md#glossary-and-terminology-guide
-    //が、opening時を1回とカウントするので、Normal Operationでは1から始まる
-    //  BOLT#2
-    //  https://github.com/lightningnetwork/lightning-rfc/blob/master/02-peer-protocol.md#rationale-10
-    self->commit_num = 1;
-    self->remote_commit_num = 1;
-    self->revoke_num = 0;
-    self->remote_revoke_num = 0;
-    //update_add_htlcのidも0から始まる(インクリメントするタイミングはcommitment numberと異なる)
-    self->htlc_id_num = 0;
-
-    self->flck_flag |= M_FLCK_FLAG_RECV;
-    self->fund_flag &= ~LN_FUNDFLAG_FUNDING;
-    proc_established(self);
-
-    return true;
-}
-
-
-static bool recv_funding_locked_reestablish(ln_self_t *self)
-{
-    DBG_PRINTF("\n");
-
-    self->flck_flag |= M_FLCK_FLAG_RECV;
-    proc_established(self);
-
     return true;
 }
 
@@ -2382,9 +2241,12 @@ static bool recv_shutdown(ln_self_t *self, const uint8_t *pData, uint16_t Len)
 
         //remoteの署名はないので、verifyしない
         ucoin_tx_free(&self->tx_closing);
-        ret = create_closing_tx(self, &self->tx_closing, false);
+        ret = create_closing_tx(self, &self->tx_closing, self->close_fee_sat, false);
         if (ret) {
             ret = ln_msg_closing_signed_create(&buf_bolt, &cnl_close);
+        } else {
+            DBG_PRINTF("fail: create close_t\n");
+            assert(false);
         }
         if (ret) {
             self->close_last_fee_sat = self->close_fee_sat;
@@ -2408,7 +2270,7 @@ static bool recv_closing_signed(ln_self_t *self, const uint8_t *pData, uint16_t 
 {
     DBG_PRINTF("BEGIN\n");
 
-    if ((self->shutdown_flag & M_SHDN_FLAG_END) != M_SHDN_FLAG_END) {
+    if (!M_SHDN_FLAG_EXCHANGED(self->shutdown_flag)) {
         self->err = LNERR_INV_STATE;
         DBG_PRINTF("bad status : %02x\n", self->shutdown_flag);
         return false;
@@ -2443,9 +2305,10 @@ static bool recv_closing_signed(ln_self_t *self, const uint8_t *pData, uint16_t 
 
     //相手が要求するFEEでverify
     ucoin_tx_free(&self->tx_closing);
-    ret = create_closing_tx(self, &self->tx_closing, true);
+    ret = create_closing_tx(self, &self->tx_closing, cnl_close.fee_sat, true);
     if (!ret) {
-        DBG_PRINTF("fail: verify\n");
+        DBG_PRINTF("fail: create close_t\n");
+        assert(false);
     }
 
     cnl_close.p_channel_id = self->channel_id;
@@ -2462,8 +2325,11 @@ static bool recv_closing_signed(ln_self_t *self, const uint8_t *pData, uint16_t 
 
     //closing_tx作成
     ucoin_tx_free(&self->tx_closing);
-    ret = create_closing_tx(self, &self->tx_closing, need_closetx);
-    assert(ret);
+    ret = create_closing_tx(self, &self->tx_closing, self->close_fee_sat, need_closetx);
+    if (!ret) {
+        DBG_PRINTF("fail: create close_t\n");
+        assert(false);
+    }
 
     if (need_closetx) {
         //closing_txを展開する
@@ -2601,7 +2467,7 @@ static bool recv_update_add_htlc(ln_self_t *self, const uint8_t *pData, uint16_t
 
     ret = ln_onion_read_packet(self->cnl_add_htlc[idx].p_onion_route, &hop_dataout,
                     &self->cnl_add_htlc[idx].shared_secret,
-                    self->cnl_add_htlc[idx].p_onion_route, ln_node_get()->keys.priv,
+                    self->cnl_add_htlc[idx].p_onion_route,
                     self->cnl_add_htlc[idx].payment_sha256, LN_SZ_HASH);
     if (!ret) {
         DBG_PRINTF("fail: onion-read\n");
@@ -2849,10 +2715,10 @@ static bool recv_commitment_signed(ln_self_t *self, const uint8_t *pData, uint16
     DBG_PRINTF("self->commit_num=%" PRIx64 "\n", self->commit_num);
 
     uint8_t prev_secret[UCOIN_SZ_PRIVKEY];
-    get_prev_percommit_secret(self, prev_secret);
+    ln_signer_get_prevkey(self, prev_secret);
 
     //per-commit-secret更新
-    update_percommit_secret(self);
+    ln_signer_update_percommit_secret(self);
 
     //チェックOKであれば、revoke_and_ackを返す
     //HTLCに変化がある場合、revoke_and_ack→commitment_signedの順で送信したい
@@ -2874,8 +2740,8 @@ static bool recv_commitment_signed(ln_self_t *self, const uint8_t *pData, uint16
 
     if (ret) {
         //commitment_signed受信通知
-        //ln_cb_commsig_recv_t commsig;
         (*self->p_callback)(self, LN_CB_COMMIT_SIG_RECV, NULL);
+        ln_db_self_save(self);
     }
 
 LABEL_EXIT:
@@ -2950,8 +2816,8 @@ static bool recv_revoke_and_ack(ln_self_t *self, const uint8_t *pData, uint16_t 
     ln_misc_update_scriptkeys(&self->funding_local, &self->funding_remote);
 
     //HTLC変化通知
-    //ln_cb_htlc_changed_t htlc_chg;
     (*self->p_callback)(self, LN_CB_HTLC_CHANGED, NULL);
+    ln_db_self_save(self);
 
 LABEL_EXIT:
     DBG_PRINTF("END\n");
@@ -2981,9 +2847,9 @@ static bool recv_update_fee(ln_self_t *self, const uint8_t *pData, uint16_t Len)
         goto LABEL_EXIT;
     }
 
-    uint32_t fee_per_kw = self->feerate_per_kw;
+    DBG_PRINTF("change fee: %" PRIu32 " --> %" PRIu32 "\n", self->feerate_per_kw, upfee.feerate_per_kw);
     self->feerate_per_kw = upfee.feerate_per_kw;
-    DBG_PRINTF("change fee: %" PRIu32 " --> %" PRIu32 "\n", fee_per_kw, upfee.feerate_per_kw);
+    ln_db_self_save(self);
 
 LABEL_EXIT:
     DBG_PRINTF("END\n");
@@ -3005,11 +2871,6 @@ static bool recv_channel_reestablish(ln_self_t *self, const uint8_t *pData, uint
     bool ret;
 
     DBG_PRINTF("BEGIN\n");
-
-    if (self->init_flag & M_INIT_FLAG_REEST_RECV) {
-        //TODO: 2回channel_reestablish受信した場合はどうする？
-        DBG_PRINTF("???: multiple channel_reestablish received.\n");
-    }
 
     ln_channel_reestablish_t reest;
     uint8_t channel_id[LN_SZ_CHANNEL_ID];
@@ -3039,16 +2900,9 @@ static bool recv_channel_reestablish(ln_self_t *self, const uint8_t *pData, uint
         self->revoke_num =  reest.next_remote_revocation_number;
     }
 
-    self->init_flag |= M_INIT_FLAG_REEST_RECV;
-
     //reestablish受信通知
     (*self->p_callback)(self, LN_CB_REESTABLISH_RECV, NULL);
-
-    if (M_INIT_FLAG_REESTED(self->init_flag) &&
-            (self->commit_num == 1) && (self->remote_commit_num == 1)) {
-        DBG_PRINTF("both commit_num == 1 ==> send funding_locked\n");
-        ret = ln_funding_tx_stabled(self);
-    }
+    ln_db_self_save(self);
 
     return ret;
 }
@@ -3057,19 +2911,9 @@ static bool recv_channel_reestablish(ln_self_t *self, const uint8_t *pData, uint
 static bool recv_announcement_signatures(ln_self_t *self, const uint8_t *pData, uint16_t Len)
 {
     bool ret;
-    ln_announce_signs_t anno_signs;
     uint8_t channel_id[LN_SZ_CHANNEL_ID];
     uint8_t *p_sig_node;
     uint8_t *p_sig_btc;
-
-    //announcement_signaturesを受信したときの状態として、以下が考えられる。
-    //      - 相手から初めて受け取り、まだ自分からは送信していない
-    //      - 自分から送信していて、相手から初めて受け取った
-    //      - 持っているけど、また受け取った
-    //
-    //  また、announcement_signatures はチャネル間メッセージだが、
-    //  channel_announcment はノードとして管理する情報になる。
-    //  ここら辺が紛らわしくなってくる理由だろう。
 
     //short_channel_idで検索
     uint64_t short_channel_id = ln_msg_announce_signs_read_short_cnl_id(pData, Len, self->channel_id);
@@ -3077,22 +2921,15 @@ static bool recv_announcement_signatures(ln_self_t *self, const uint8_t *pData, 
         DBG_PRINTF("fail: invalid packet\n");
         return false;
     }
-    if (self->short_channel_id == 0) {
-        (*self->p_callback)(self, LN_CB_SHT_CNL_ID_UPDATE, NULL);
-    }
-    DBG_PRINTF("short_channel_id = %" PRIx64 "\n", short_channel_id);
-    if (short_channel_id != self->short_channel_id) {
-        self->err = LNERR_INV_SHORT_CHANNEL;
-        DBG_PRINTF("fail: short_channel_id mismatch: %016" PRIx64 "\n", self->short_channel_id);
-        return false;
+    if (self->cnl_anno.buf == NULL) {
+        create_local_channel_announcement(self);
     }
 
     //channel_announcementを埋める
-    //  self->cnl_annoはfundindg_lockedメッセージ作成時に行っている
-    //  remoteのsignature
     ucoin_keys_sort_t sort = sort_nodeid(self);
     ln_msg_get_anno_signs(self, &p_sig_node, &p_sig_btc, false, sort);
 
+    ln_announce_signs_t anno_signs;
     anno_signs.p_channel_id = channel_id;
     anno_signs.p_node_signature = p_sig_node;
     anno_signs.p_btc_signature = p_sig_btc;
@@ -3112,7 +2949,6 @@ static bool recv_announcement_signatures(ln_self_t *self, const uint8_t *pData, 
     DBG_PRINTF("+++ channel_announcement[%" PRIx64 "] +++\n", self->short_channel_id);
     ln_msg_cnl_announce_print(self->cnl_anno.buf, self->cnl_anno.len);
 
-
     //channel_update
     ucoin_buf_t buf_upd;
     ucoin_buf_init(&buf_upd);
@@ -3123,8 +2959,6 @@ static bool recv_announcement_signatures(ln_self_t *self, const uint8_t *pData, 
         DBG_PRINTF("fail\n");
         goto LABEL_EXIT;
     }
-
-    //DB保存
     ret = ln_db_annocnl_save(&self->cnl_anno, ln_short_channel_id(self), ln_their_node_id(self));
     if (!ret) {
         DBG_PRINTF("fail: ln_db_annocnl_save\n");
@@ -3132,8 +2966,7 @@ static bool recv_announcement_signatures(ln_self_t *self, const uint8_t *pData, 
     }
     ret = ln_db_annocnlupd_save(&buf_upd, &upd, ln_their_node_id(self));
     if (!ret) {
-        DBG_PRINTF("fail\n");
-        //goto LABEL_EXIT;
+        DBG_PRINTF("fail: but through\n");
     }
     ret = true;
 
@@ -3214,7 +3047,7 @@ static bool recv_channel_update(ln_self_t *self, const uint8_t *pData, uint16_t 
         //short_channel_id と dir から node_id を取得する
         uint8_t node_id[UCOIN_SZ_PUBKEY];
 
-        ret = get_nodeid(node_id, upd.short_channel_id, upd.flags & LN_CNLUPD_FLAGS_DIRECTION);
+        ret = get_nodeid(self, node_id, upd.short_channel_id, upd.flags & LN_CNLUPD_FLAGS_DIRECTION);
         if (ret && ucoin_keys_chkpub(node_id)) {
             ret = ln_msg_cnl_update_verify(node_id, pData, Len);
             if (!ret) {
@@ -3222,6 +3055,7 @@ static bool recv_channel_update(ln_self_t *self, const uint8_t *pData, uint16_t 
             }
         } else {
             DBG_PRINTF("fail: maybe not found channel_announcement in DB\n");
+            ret = true;
         }
     } else {
         DBG_PRINTF("fail: channel_update\n");
@@ -3246,6 +3080,46 @@ static bool recv_channel_update(ln_self_t *self, const uint8_t *pData, uint16_t 
 }
 
 
+/** funding_tx minimum_depth待ち開始
+ *
+ * @param[in]   self
+ * @param[in]   bSendTx     true:funding_txをbroadcastする
+ *
+ * @note
+ *      - funding_signed送信後あるいはfunding_tx展開後のみ呼び出す
+ */
+static void start_funding_wait(ln_self_t *self, bool bSendTx)
+{
+    DBG_PRINTF("\n");
+    
+    ln_cb_funding_t funding;
+
+    //commitment numberは0から始まる
+    //  BOLT#0
+    //  https://github.com/lightningnetwork/lightning-rfc/blob/master/00-introduction.md#glossary-and-terminology-guide
+    //が、opening時を1回とカウントするので、Normal Operationでは1から始まる
+    //  BOLT#2
+    //  https://github.com/lightningnetwork/lightning-rfc/blob/master/02-peer-protocol.md#rationale-10
+    self->commit_num = 1;
+    self->remote_commit_num = 1;
+    // self->revoke_num = 0;
+    // self->remote_revoke_num = 0;
+    // self->htlc_id_num = 0;
+    // self->short_channel_id = 0;
+
+    //per_commit_secret更新
+    ln_signer_update_percommit_secret(self);
+
+    funding.b_send = bSendTx;
+    if (bSendTx) {
+        funding.p_tx_funding = &self->tx_funding;
+    }
+    (*self->p_callback)(self, LN_CB_FUNDINGTX_WAIT, &funding);
+
+    ln_db_self_save(self);
+}
+
+
 /********************************************************************
  * Transaction作成
  ********************************************************************/
@@ -3267,18 +3141,7 @@ static bool create_funding_tx(ln_self_t *self)
     ucoin_sw_add_vout_p2wsh(&self->tx_funding, self->p_establish->cnl_open.funding_sat, &self->redeem_fund);
 
     //vout#1:P2WPKH - change(amountは後で代入)
-    if (self->p_establish->p_fundin->p_change_pubkey != NULL) {
-        ucoin_sw_add_vout_p2wpkh_pub(&self->tx_funding, (uint64_t)-1, self->p_establish->p_fundin->p_change_pubkey);
-        free(self->p_establish->p_fundin->p_change_pubkey);       //APP
-        self->p_establish->p_fundin->p_change_pubkey = NULL;
-    } else if (self->p_establish->p_fundin->p_change_addr != NULL) {
-        ucoin_tx_add_vout_addr(&self->tx_funding, (uint64_t)-1, self->p_establish->p_fundin->p_change_addr);
-        free(self->p_establish->p_fundin->p_change_addr);         //APP
-        self->p_establish->p_fundin->p_change_addr = NULL;
-    } else {
-        DBG_PRINTF("fail: no change address\n");
-        return false;
-    }
+    ucoin_tx_add_vout_addr(&self->tx_funding, (uint64_t)-1, self->p_establish->p_fundin->change_addr);
 
     //input
     //vin#0
@@ -3304,14 +3167,21 @@ static bool create_funding_tx(ln_self_t *self)
         return false;
     }
     ucoin_buf_free(&txbuf);
+    self->funding_local.txindex = M_FUNDING_INDEX;      //TODO: vout#0は2-of-2、vout#1はchangeにしている
 
     //署名
-    self->funding_local.txindex = M_FUNDING_INDEX;      //TODO: vout#0は2-of-2、vout#1はchangeにしている
-    ucoin_util_sign_p2wpkh(&self->tx_funding, self->funding_local.txindex,
+    bool ret;
+#if 1
+    ln_cb_funding_sign_t sig;
+    sig.p_tx =  &self->tx_funding;
+    (*self->p_callback)(self, LN_CB_SIGN_FUNDINGTX_REQ, &sig);
+    ret = sig.ret;
+#else
+    ln_signer_p2wpkh(&self->tx_funding, self->funding_local.txindex,
             self->p_establish->p_fundin->amount, &self->p_establish->p_fundin->keys);
     if (!self->p_establish->p_fundin->b_native) {
         // lnでは必ずnative設定がtrueになっている。
-        // そのため、 #ucoin_util_sign_p2wpkh() で署名するとscriptSigは空になる。
+        // そのため、 #ln_signer_p2wpkh() で署名するとscriptSigは空になる。
         // もしINPUTのトランザクションが非Nativeだった場合、自力でscriptSigを作成する
         ucoin_vin_t *vin = &self->tx_funding.vin[self->funding_local.txindex];
         ucoin_buf_t *p_buf = &vin->script;
@@ -3323,9 +3193,11 @@ static bool create_funding_tx(ln_self_t *self)
         p_buf->buf[2] = (uint8_t)UCOIN_SZ_PUBKEYHASH;
         ucoin_util_hash160(&p_buf->buf[3], self->p_establish->p_fundin->keys.pub, UCOIN_SZ_PUBKEY);
     }
+    ret = true;
+#endif
     ucoin_tx_txid(self->funding_local.txid, &self->tx_funding);
 
-    return true;
+    return ret;
 }
 
 
@@ -3464,11 +3336,8 @@ static bool create_to_local(ln_self_t *self,
         //      secrethtlckey = basepoint_secret + SHA256(per_commitment_point || basepoint)
         ucoin_util_keys_t htlckey;
         if (pTxHtlcs != NULL) {
-            ln_derkey_privkey(htlckey.priv,
-                        self->funding_local.keys[MSG_FUNDIDX_HTLC].pub,
-                        self->funding_local.keys[MSG_FUNDIDX_PER_COMMIT].pub,
-                        self->funding_local.keys[MSG_FUNDIDX_HTLC].priv);
-            ucoin_keys_priv2pub(htlckey.pub, htlckey.priv);
+            ln_signer_get_secret(self, &htlckey, MSG_FUNDIDX_HTLC,
+                self->funding_local.keys[MSG_FUNDIDX_PER_COMMIT].pub);
             assert(memcmp(htlckey.pub, self->funding_local.scriptpubkeys[MSG_SCRIPTIDX_LOCALHTLCKEY], UCOIN_SZ_PUBKEY) == 0);
         }
 
@@ -3836,11 +3705,8 @@ static bool create_to_remote(ln_self_t *self,
 
         //htlc_signature用鍵
         ucoin_util_keys_t htlckey;
-        ln_derkey_privkey(htlckey.priv,
-                    self->funding_local.keys[MSG_FUNDIDX_HTLC].pub,
-                    self->funding_remote.pubkeys[MSG_FUNDIDX_PER_COMMIT],
-                    self->funding_local.keys[MSG_FUNDIDX_HTLC].priv);
-        ucoin_keys_priv2pub(htlckey.pub, htlckey.priv);
+        ln_signer_get_secret(self, &htlckey, MSG_FUNDIDX_HTLC,
+                    self->funding_remote.pubkeys[MSG_FUNDIDX_PER_COMMIT]);
 
         for (int vout_idx = 0; vout_idx < tx_commit.vout_cnt; vout_idx++) {
             //各HTLCのHTLC Timeout/Success Transactionを作って署名するために、
@@ -3952,6 +3818,8 @@ static bool create_to_remote(ln_self_t *self,
 
 /** closing tx作成
  *
+ * @param[in]   FeeSat      
+ * @param[in]   bVerify     true:verifyを行う
  * @note
  *      - INPUT: 2-of-2(順番はself->key_fund_sort)
  *          - 自分：self->commit_local.signature
@@ -3961,14 +3829,14 @@ static bool create_to_remote(ln_self_t *self,
  *          - 相手：self->shutdown_scriptpk_remote, self->their_msat / 1000
  *      - BIP69でソートする
  */
-static bool create_closing_tx(ln_self_t *self, ucoin_tx_t *pTx, bool bVerify)
+static bool create_closing_tx(ln_self_t *self, ucoin_tx_t *pTx, uint64_t FeeSat, bool bVerify)
 {
+    DBG_PRINTF("BEGIN\n");
+
     if ((self->shutdown_scriptpk_local.len == 0) || (self->shutdown_scriptpk_remote.len == 0)) {
         DBG_PRINTF("not mutual output set\n");
         return false;
     }
-
-    DBG_PRINTF("BEGIN: verify:%d\n", bVerify);
 
     bool ret;
     uint64_t fee_local;
@@ -3982,11 +3850,11 @@ static bool create_closing_tx(ln_self_t *self, ucoin_tx_t *pTx, bool bVerify)
 
     //BOLT#3: feeはfundedの方から引く
     if (ln_is_funder(self)) {
-        fee_local = self->close_fee_sat;
+        fee_local = FeeSat;
         fee_remote = 0;
     } else {
         fee_local = 0;
-        fee_remote = self->close_fee_sat;
+        fee_remote = FeeSat;
     }
 
     //vout
@@ -4009,14 +3877,13 @@ static bool create_closing_tx(ln_self_t *self, ucoin_tx_t *pTx, bool bVerify)
 
     //BIP69
     ucoin_util_sort_bip69(pTx);
-    M_DBG_PRINT_TX(pTx);
 
     //署名
     uint8_t sighash[UCOIN_SZ_SIGHASH];
     ucoin_util_sign_p2wsh_1(sighash, pTx, 0, self->funding_sat, &self->redeem_fund);
-    ret = ucoin_util_sign_p2wsh_2(&buf_sig, sighash, &self->funding_local.keys[MSG_FUNDIDX_FUNDING]);
+    ret = ln_signer_p2wsh_2(&buf_sig, sighash, &self->funding_local.keys[MSG_FUNDIDX_FUNDING]);
     if (!ret) {
-        DBG_PRINTF("fail: ucoin_util_sign_p2wsh_2\n");
+        DBG_PRINTF("fail: ln_signer_p2wsh_2\n");
         ucoin_tx_free(pTx);
         return false;
     }
@@ -4024,7 +3891,7 @@ static bool create_closing_tx(ln_self_t *self, ucoin_tx_t *pTx, bool bVerify)
     ln_misc_sigtrim(self->commit_local.signature, buf_sig.buf);
 
     //署名追加
-    if (ret && bVerify) {
+    if (bVerify) {
         ucoin_buf_t buf_sig_from_remote;
 
         ucoin_buf_init(&buf_sig_from_remote);
@@ -4040,6 +3907,8 @@ static bool create_closing_tx(ln_self_t *self, ucoin_tx_t *pTx, bool bVerify)
         //
         ret = ucoin_sw_verify_2of2(pTx, 0, sighash,
                         &self->tx_funding.vout[self->funding_local.txindex].script);
+    } else {
+        DBG_PRINTF("no verify\n");
     }
     ucoin_buf_free(&buf_sig);
 
@@ -4051,43 +3920,17 @@ static bool create_closing_tx(ln_self_t *self, ucoin_tx_t *pTx, bool bVerify)
 }
 
 
-/** チャネル用鍵生成
- *
- * @param[in,out]   self        チャネル情報
- * @retval  true    成功
- * @note
- *      - open_channel/accept_channelの送信前に使用する想定
- */
-static bool create_channelkeys(ln_self_t *self)
-{
-    //鍵生成
-    //  open_channel/accept_channelの鍵は update_percommit_secret()で生成
-    for (int lp = MSG_FUNDIDX_REVOCATION; lp < LN_FUNDIDX_MAX; lp++) {
-        if (lp != MSG_FUNDIDX_PER_COMMIT) {
-            do {
-                ucoin_util_random(self->funding_local.keys[lp].priv, UCOIN_SZ_PRIVKEY);
-            } while (!ucoin_keys_chkpriv(self->funding_local.keys[lp].priv));
-            ucoin_keys_priv2pub(self->funding_local.keys[lp].pub, self->funding_local.keys[lp].priv);
-        }
-    }
-    ln_print_keys(PRINTOUT, &self->funding_local, &self->funding_remote);
-
-    update_percommit_secret(self);
-
-    return true;
-}
-
-
 // channel_announcement用データ(自分の枠)
 //  short_channel_id決定後に呼び出す
 static bool create_local_channel_announcement(ln_self_t *self)
 {
+    DBG_PRINTF("short_channel_id=%016" PRIu64 "\n", self->short_channel_id);
     ucoin_buf_free(&self->cnl_anno);
 
     ln_cnl_announce_create_t anno;
 
     anno.short_channel_id = self->short_channel_id;
-    anno.p_my_node = &(ln_node_get()->keys);
+    anno.p_my_node_pub = ln_node_getid();
     anno.p_peer_node_pub = self->peer_node_id;
     anno.p_my_funding = &self->funding_local.keys[MSG_FUNDIDX_FUNDING];
     anno.p_peer_funding_pub = self->funding_remote.pubkeys[MSG_FUNDIDX_FUNDING];
@@ -4117,48 +3960,10 @@ static bool create_channel_update(ln_self_t *self, ln_cnl_update_t *pUpd, ucoin_
     pUpd->fee_base_msat = self->anno_prm.fee_base_msat;
     pUpd->fee_prop_millionths = self->anno_prm.fee_prop_millionths;
     //署名
-    pUpd->p_key = ln_node_get()->keys.priv;
     pUpd->flags = Flag | sort_nodeid(self);
     bool ret = ln_msg_cnl_update_create(pCnlUpd, pUpd);
 
     return ret;
-}
-
-
-/** per_commitment_secret更新
- *
- * @param[in,out]   self        チャネル情報
- * @note
- *      - indexを進める
- */
-static void update_percommit_secret(ln_self_t *self)
-{
-    ln_derkey_create_secret(self->funding_local.keys[MSG_FUNDIDX_PER_COMMIT].priv, self->storage_seed, self->storage_index);
-    ucoin_keys_priv2pub(self->funding_local.keys[MSG_FUNDIDX_PER_COMMIT].pub, self->funding_local.keys[MSG_FUNDIDX_PER_COMMIT].priv);
-    // DBG_PRINTF("self->storage_index = %" PRIx64 "\n", self->storage_index);
-    // DUMPBIN(self->funding_local.keys[MSG_FUNDIDX_PER_COMMIT].priv, UCOIN_SZ_PRIVKEY);
-
-    self->storage_index--;
-
-    //DBG_PRINTF("self->storage_index = %" PRIx64 "\n", self->storage_index);
-    ln_misc_update_scriptkeys(&self->funding_local, &self->funding_remote);
-}
-
-
-/** 1つ前のper_commit_secret取得
- *
- * @param[in,out]   self            チャネル情報
- * @param[out]      p_prev_secret   1つ前のper_commit_secret
- */
-static void get_prev_percommit_secret(ln_self_t *self, uint8_t *p_prev_secret)
-{
-    //  現在の funding_local.keys[MSG_FUNDIDX_PER_COMMIT]はself->storage_indexから生成されていて、「次のper_commitment_secret」になる。
-    //  最後に使用した値は self->storage_index + 1で、これが「現在のper_commitment_secret」になる。
-    //  そのため、「1つ前のper_commitment_secret」は self->storage_index + 2 となる。
-    ln_derkey_create_secret(p_prev_secret, self->storage_seed, self->storage_index + 2);
-
-    DBG_PRINTF("prev self->storage_index = %" PRIx64 "\n", self->storage_index + 2);
-    DUMPBIN(p_prev_secret, UCOIN_SZ_PRIVKEY);
 }
 
 
@@ -4180,10 +3985,10 @@ static bool store_peer_percommit_secret(ln_self_t *self, const uint8_t *p_prev_s
     bool ret = ln_derkey_storage_insert_secret(&self->peer_storage, p_prev_secret, self->peer_storage_index);
     if (ret) {
         self->peer_storage_index--;
-        ln_db_self_save(self);
+        //ln_db_self_save(self);    //保存は呼び出し元で行う
         DBG_PRINTF("I=%" PRIx64 " --> %" PRIx64 "\n", (uint64_t)(self->peer_storage_index + 1), self->peer_storage_index);
 
-        //for (uint64_t idx = M_SECINDEX_INIT; idx > self->peer_storage_index; idx--) {
+        //for (uint64_t idx = LN_SECINDEX_INIT; idx > self->peer_storage_index; idx--) {
         //    DBG_PRINTF("I=%" PRIx64 "\n", idx);
         //    DBG_PRINTF2("  ");
         //    uint8_t sec[UCOIN_SZ_PRIVKEY];
@@ -4202,57 +4007,28 @@ static bool store_peer_percommit_secret(ln_self_t *self, const uint8_t *p_prev_s
 }
 
 
-/** funding_locked交換完了のチェックおよび処理実行
- *
- * funding_lockedの送受信処理に移動させてもよいかもしれない
- */
-static void proc_established(ln_self_t *self)
-{
-    if (self->flck_flag == (M_FLCK_FLAG_SEND | M_FLCK_FLAG_RECV)) {
-        //funding_locked送受信済み
-        DBG_PRINTF("funding_locked sent and recv\n");
-
-        //channel_reestablish済みと同じ状態にしておく
-        self->init_flag |= M_INIT_FLAG_REEST_SEND | M_INIT_FLAG_REEST_RECV;
-
-        //Establish完了通知
-        DBG_PRINTF("Establish完了通知");
-        ln_cb_funding_t funding;
-
-        funding.p_tx_funding = &self->tx_funding;
-        funding.p_txid = self->funding_local.txid;
-        funding.b_send = false;
-        funding.annosigs = (self->p_establish) ? (self->p_establish->cnl_open.channel_flags) : false;
-        (*self->p_callback)(self, LN_CB_ESTABLISHED, &funding);
-
-        free_establish(self);
-
-        //Normal Operation可能
-        DBG_PRINTF("Normal Operation可能\n");
-        self->flck_flag |= M_FLCK_FLAG_END;
-    }
-}
-
-
 /** announcement_signatures交換完了のチェックおよび処理実行
  *
  * announcement_signaturesの送受信処理に移動させてもよいかもしれない
  */
-static void proc_announce_sigsed(ln_self_t *self)
+static bool proc_announce_sigsed(ln_self_t *self)
 {
+    bool ret = false;
+
     if (self->anno_flag == (M_ANNO_FLAG_SEND | M_ANNO_FLAG_RECV)) {
         //announcement_signatures送受信済み
         DBG_PRINTF("announcement_signatures sent and recv\n");
 
         ln_cb_anno_sigs_t anno;
-
         anno.sort = sort_nodeid(self);
         (*self->p_callback)(self, LN_CB_ANNO_SIGSED, &anno);
 
         self->anno_flag |= M_ANNO_FLAG_END;
         ucoin_buf_free(&self->cnl_anno);
-        ln_db_self_save(self);
+        ret = true;
     }
+
+    return ret;
 }
 
 
@@ -4263,7 +4039,7 @@ static bool chk_peer_node(ln_self_t *self)
 
 
 //node_id取得
-static bool get_nodeid(uint8_t *pNodeId, uint64_t short_channel_id, uint8_t Dir)
+static bool get_nodeid(ln_self_t *self, uint8_t *pNodeId, uint64_t short_channel_id, uint8_t Dir)
 {
     bool ret;
 
@@ -4288,7 +4064,21 @@ static bool get_nodeid(uint8_t *pNodeId, uint64_t short_channel_id, uint8_t Dir)
             DBG_PRINTF("ret=%d\n", ret);
         }
     } else {
-        DBG_PRINTF("ret=%d\n", ret);
+        if (short_channel_id == self->short_channel_id) {
+            // DBには無いが、このchannelの情報
+            ucoin_keys_sort_t mydir = sort_nodeid(self);
+            if ( ((mydir == UCOIN_KEYS_SORT_ASC) && (Dir == 0)) ||
+                 ((mydir == UCOIN_KEYS_SORT_OTHER) && (Dir == 1)) ) {
+                //自ノード
+                DBG_PRINTF("this channel: my node\n");
+                memcpy(pNodeId, ln_node_getid(), UCOIN_SZ_PUBKEY);
+            } else {
+                //相手ノード
+                DBG_PRINTF("this channel: peer node\n");
+                memcpy(pNodeId, self->peer_node_id, UCOIN_SZ_PUBKEY);
+            }
+            ret = true;
+        }
     }
     ucoin_buf_free(&buf_cnl_anno);
 
@@ -4377,32 +4167,41 @@ static void close_alloc(ln_close_force_t *pClose, int Num)
 
 /** establish用メモリ解放
  *
+ * @param[in]   bEndEstablish   true: funding用メモリ解放
  */
-static void free_establish(ln_self_t *self)
+static void free_establish(ln_self_t *self, bool bEndEstablish)
 {
     if (self->p_establish != NULL) {
         if (self->p_establish->p_fundin != NULL) {
-            free(self->p_establish->p_fundin->p_change_pubkey);       //APP
-            free(self->p_establish->p_fundin->p_change_addr);         //APP
             M_FREE(self->p_establish->p_fundin);  //M_MALLOC: ln_create_open_channel()
         }
-        M_FREE(self->p_establish);        //M_MALLOC: ln_set_establish()
-        DBG_PRINTF("END\n");
+        if (bEndEstablish) {
+            M_FREE(self->p_establish);        //M_MALLOC: ln_set_establish()
+            DBG_PRINTF("free\n");
+        }
     }
+    self->fund_flag &= ~LN_FUNDFLAG_FUNDING;
 }
 
 
+/**
+ * 
+ * @param[in]   self
+ * @retval      UCOIN_KEYS_SORT_ASC     自ノードが先
+ * @retval      UCOIN_KEYS_SORT_OTHER   相手ノードが先
+ */
 static ucoin_keys_sort_t sort_nodeid(ln_self_t *self)
 {
     ucoin_keys_sort_t sort;
 
     int lp;
+    const uint8_t *p_nodeid = ln_node_getid();
     for (lp = 0; lp < UCOIN_SZ_PUBKEY; lp++) {
-        if (ln_node_get()->keys.pub[lp] != self->peer_node_id[lp]) {
+        if (p_nodeid[lp] != self->peer_node_id[lp]) {
             break;
         }
     }
-    if (ln_node_get()->keys.pub[lp] < self->peer_node_id[lp]) {
+    if (p_nodeid[lp] < self->peer_node_id[lp]) {
         DBG_PRINTF("my node= first\n");
         sort = UCOIN_KEYS_SORT_ASC;
     } else {

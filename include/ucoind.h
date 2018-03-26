@@ -47,6 +47,13 @@ static inline int tid() {
 #define SZ_RPC_PASSWD               (64)        ///< RPCPASSWORD
 #define SZ_RPC_URL                  (256)       ///< URL
 
+#define SZ_SOCK_SERVER_MAX          (10)        ///< 接続可能max(server)
+#define SZ_SOCK_CLIENT_MAX          (10)        ///< 接続可能max(client)
+
+#define TM_WAIT_CONNECT             (10)        ///< client socket接続待ち[sec]
+
+#define FNAME_CONN_LOG              "connect.log"
+#define FNAME_FMT_NODECONF          "ptarm_%s.conf"
 
 // JSON-RPCエラー
 
@@ -239,10 +246,6 @@ typedef struct lnapp_conf_t lnapp_conf_t;
 /********************************************************************
  * prototypes
  ********************************************************************/
-
-const uint8_t *ucoind_nodeid(void);
-uint16_t ucoind_nodeport(void);
-const ucoin_util_keys_t *ucoind_nodekeys(void);
 
 bool ucoind_forward_payment(fwd_proc_add_t *p_add);
 bool ucoind_backward_fulfill(const ln_cb_fulfill_htlc_recv_t *p_fulfill);

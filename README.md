@@ -1,6 +1,7 @@
 # ptarmigan
 
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
+[![Build Status](https://travis-ci.org/nayutaco/ptarmigan.svg?branch=development)](https://travis-ci.org/nayutaco/ptarmigan)
 [![Coverity Scan Build Status](https://scan.coverity.com/projects/15128/badge.svg)](https://scan.coverity.com/projects/nayutaco-ptarmigan)
 
 ## About
@@ -70,7 +71,6 @@ make distclean
   * [libsodium](https://download.libsodium.org/doc/) ([github](https://github.com/jedisct1/libsodium))
   * [lmdb](https://symas.com/lightning-memory-mapped-database/) ([github](https://github.com/LMDB/lmdb))
   * [jsonrpc-c](https://github.com/nayutaco/jsonrpc-c) - forked from [hmng/jsonrpc-c](https://github.com/hmng/jsonrpc-c)
-  * [bech32](https://github.com/nayutaco/bech32) - forked from [sipa/bech32](https://github.com/sipa/bech32)
 
 * install
   * [curl](https://curl.haxx.se/)
@@ -79,22 +79,25 @@ make distclean
   * [boost](http://www.boost.org/) (for dijkstra shortest paths)
   * [jq](https://stedolan.github.io/jq/) (for test scripts)
 
+* include
+  * [bech32](https://github.com/nayutaco/bech32) - forked from [sipa/bech32](https://github.com/sipa/bech32)
+
 ### application
 
 * [bitcoind](https://github.com/bitcoin/bitcoin)
   * bitcoin-cli
     * `getnewaddress`
-    * `addwitnessaddress`
+    * `addwitnessaddress` (bitcoind v0.15.x)
     * `sendtoaddress`
     * `gettxout`
   * JSON-RPC
     * `getblockcount`
     * `getrawtransaction`
+    * `signrawtransaction`
     * `sendrawtransaction`
     * `gettxout`
     * `getblock`
     * `getnewaddress`
-    * `dumpprivkey` (for funding)
     * `estimatesmartfee`
 
 ## Implement status

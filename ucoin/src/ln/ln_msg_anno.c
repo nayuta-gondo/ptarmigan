@@ -34,6 +34,7 @@
 
 #include "ln_msg_anno.h"
 #include "ln_misc.h"
+#include "ln_node.h"
 
 
 /********************************************************************
@@ -106,8 +107,8 @@ bool HIDDEN ln_msg_cnl_announce_create(ucoin_buf_t *pBuf, const ln_cnl_announce_
 #if 1
     DBG_PRINTF("--------------------------\n");
     DBG_PRINTF2("short_channel_id: %" PRIx64 "\n", pMsg->short_channel_id);
-    DBG_PRINTF2("p_my_node->pub: ");
-    DUMPBIN(pMsg->p_my_node->pub, UCOIN_SZ_PUBKEY);
+    DBG_PRINTF2("p_my_node_pub: ");
+    DUMPBIN(pMsg->p_my_node_pub, UCOIN_SZ_PUBKEY);
     DBG_PRINTF2("p_peer_node_pub: ");
     DUMPBIN(pMsg->p_peer_node_pub, UCOIN_SZ_PUBKEY);
     DBG_PRINTF2("p_my_funding->pub: ");
@@ -150,14 +151,14 @@ bool HIDDEN ln_msg_cnl_announce_create(ucoin_buf_t *pBuf, const ln_cnl_announce_
     int offset_sig;
     if (pMsg->sort == UCOIN_KEYS_SORT_ASC) {
         //自ノードが先
-        p_node_1 = pMsg->p_my_node->pub;
+        p_node_1 = pMsg->p_my_node_pub;
         p_node_2 = pMsg->p_peer_node_pub;
         p_btc_1 = pMsg->p_my_funding->pub;
         p_btc_2 = pMsg->p_peer_funding_pub;
         offset_sig = 0;
     } else {
         p_node_1 = pMsg->p_peer_node_pub;
-        p_node_2 = pMsg->p_my_node->pub;
+        p_node_2 = pMsg->p_my_node_pub;
         p_btc_1 = pMsg->p_peer_funding_pub;
         p_btc_2 = pMsg->p_my_funding->pub;
         offset_sig = LN_SZ_SIGNATURE;
@@ -187,8 +188,7 @@ bool HIDDEN ln_msg_cnl_announce_create(ucoin_buf_t *pBuf, const ln_cnl_announce_
     //DBG_PRINTF("hash=");
     //DUMPBIN(hash, UCOIN_SZ_HASH256);
 
-    ret = ucoin_tx_sign_rs(pBuf->buf + sizeof(uint16_t) + offset_sig,
-                    hash, pMsg->p_my_node->priv);
+    ret = ln_node_sign_nodekey(pBuf->buf + sizeof(uint16_t) + offset_sig, hash);
     if (!ret) {
         DBG_PRINTF("fail: sign node\n");
         goto LABEL_EXIT;
@@ -506,7 +506,7 @@ bool HIDDEN ln_msg_node_announce_create(ucoin_buf_t *pBuf, const ln_node_announc
     ln_misc_push32be(&proto, pMsg->timestamp);
 
     //        [33:node_id]
-    ucoin_push_data(&proto, pMsg->p_my_node->pub, UCOIN_SZ_PUBKEY);
+    ucoin_push_data(&proto, pMsg->p_node_id, UCOIN_SZ_PUBKEY);
 
     //        [3:rgb_color]
     ucoin_push_data(&proto, pMsg->rgbcolor, 3);
@@ -526,8 +526,8 @@ bool HIDDEN ln_msg_node_announce_create(ucoin_buf_t *pBuf, const ln_node_announc
     //        [addrlen:addresses]
     switch (pMsg->addr.type) {
     case LN_NODEDESC_NONE:
-        ln_misc_push16be(&proto, 1);
-        ln_misc_push8(&proto, LN_NODEDESC_NONE);
+        //noneは登録しない
+        ln_misc_push16be(&proto, 0);
         break;
     case LN_NODEDESC_IPV4:
     case LN_NODEDESC_IPV6:
@@ -556,7 +556,7 @@ bool HIDDEN ln_msg_node_announce_create(ucoin_buf_t *pBuf, const ln_node_announc
     //DBG_PRINTF("hash=");
     //DUMPBIN(hash, UCOIN_SZ_HASH256);
 
-    bool ret = ucoin_tx_sign_rs(pBuf->buf + sizeof(uint16_t), hash, pMsg->p_my_node->priv);
+    bool ret = ln_node_sign_nodekey(pBuf->buf + sizeof(uint16_t), hash);
 
     return ret;
 }
@@ -782,7 +782,7 @@ bool HIDDEN ln_msg_cnl_update_create(ucoin_buf_t *pBuf, const ln_cnl_update_t *p
     DBG_PRINTF("hash=");
     DUMPBIN(hash, UCOIN_SZ_HASH256);
 
-    ret = ucoin_tx_sign_rs(pBuf->buf + sizeof(uint16_t), hash, pMsg->p_key);
+    ret = ln_node_sign_nodekey(pBuf->buf + sizeof(uint16_t), hash);
     if (ret) {
         ucoin_push_trim(&proto);
     } else {

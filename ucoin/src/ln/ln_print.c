@@ -45,7 +45,6 @@
 #define M_STR(item,value)   M_QQ(item) ":" M_QQ(value)
 #define M_VAL(item,value)   M_QQ(item) ":" value
 
-
 static const char *KEYS_STR[LN_FUNDIDX_MAX] = {
     "bp_funding", "bp_revocation", "bp_payment", "bp_delayed", "bp_htlc", "bp_per_commit"
 };
@@ -53,13 +52,13 @@ static const char *SCR_STR[LN_SCRIPTIDX_MAX] = {
     "remotekey", "delayedkey", "revocationkey", "local_htlckey", "remote_htlckey"
 };
 
-
 /**************************************************************************
  * public functions
  **************************************************************************/
 
 #ifdef UCOIN_USE_PRINTFUNC
 
+#if 0
 void ln_print_wallet(const ln_self_t *self)
 {
     fprintf(PRINTOUT, "{\n");
@@ -153,6 +152,7 @@ void ln_print_self(const ln_self_t *self)
 
     //announce
     fprintf(PRINTOUT, M_QQ("anno_flag") ": " M_QQ("%02x") ",\n", self->anno_flag);
+    fprintf(PRINTOUT, M_QQ("cnl_anno.len") ": %" PRIu32 ",\n", self->cnl_anno.len);
     fprintf(PRINTOUT, M_QQ("cltv_expiry_delta") ": %" PRIu16 ",\n", self->anno_prm.cltv_expiry_delta);
     fprintf(PRINTOUT, M_QQ("htlc_minimum_msat") ": %" PRIu64 ",\n", self->anno_prm.htlc_minimum_msat);
     fprintf(PRINTOUT, M_QQ("fee_base_msat") ": %" PRIu32 ",\n", self->anno_prm.fee_base_msat);
@@ -197,7 +197,7 @@ void ln_print_self(const ln_self_t *self)
             ucoin_util_dumpbin(PRINTOUT, self->cnl_add_htlc[idx].payment_sha256, UCOIN_SZ_SHA256, false);
             fprintf(PRINTOUT, "\",\n");
             fprintf(PRINTOUT, M_QQ("flag") ": " M_QQ("%02x") ",\n", self->cnl_add_htlc[idx].flag);
-            fprintf(PRINTOUT, M_QQ("shared_secret_len") ": %d,\n", self->cnl_add_htlc[idx].shared_secret.len);
+            fprintf(PRINTOUT, M_QQ("shared_secret_len") ": %u,\n", self->cnl_add_htlc[idx].shared_secret.len);
             fprintf(PRINTOUT, M_QQ("prev_short_channel_id") ": " M_QQ("%016" PRIx64) "\n", self->cnl_add_htlc[idx].prev_short_channel_id);
             fprintf(PRINTOUT, "}\n");
             cont = true;
@@ -237,9 +237,10 @@ void ln_print_self(const ln_self_t *self)
 
     fprintf(PRINTOUT, "}\n");
 }
+#endif
 
 
-/** [showdb用]
+/** [showdb/routing用]
  *
  *
  */
@@ -264,7 +265,6 @@ void ln_print_announce(const uint8_t *pData, uint16_t Len)
     case MSGTYPE_CHANNEL_UPDATE:
         {
             ln_cnl_update_t msg;
-            msg.p_key = NULL;
             ln_msg_cnl_update_read(&msg, pData, Len);
             ln_msg_cnl_update_print(&msg);
         }
@@ -273,7 +273,7 @@ void ln_print_announce(const uint8_t *pData, uint16_t Len)
 }
 
 
-/** [showdb用]
+/** [showdb/routing用]
  *
  *
  */
@@ -331,7 +331,6 @@ void ln_print_announce_short(const uint8_t *pData, uint16_t Len)
     case MSGTYPE_CHANNEL_UPDATE:
         {
             ln_cnl_update_t ann;
-            ann.p_key = NULL;
             bool ret = ln_msg_cnl_update_read(&ann, pData, Len);
             if (ret) {
                 fprintf(PRINTOUT, M_QQ("type") ": " M_QQ("channel_update %s") ",\n", (ann.flags & 1) ? "2" : "1");
@@ -381,67 +380,57 @@ void ln_print_peerconf(FILE *fp, const uint8_t *pData, uint16_t Len)
 }
 
 
-void ln_print_node(const ln_node_t *node)
-{
-    printf("=NODE=============================================\n");
-    // printf("node_key: ");
-    // ucoin_util_dumpbin(PRINTOUT, node->keys.priv, UCOIN_SZ_PRIVKEY, true);
-    printf("node_id: ");
-    ucoin_util_dumpbin(PRINTOUT, node->keys.pub, UCOIN_SZ_PUBKEY, true);
-    printf("features= %02x\n", node->features);
-    printf("alias= %s\n", node->alias);
-    printf("addr.type=%d\n", node->addr.type);
-    if (node->addr.type == LN_NODEDESC_IPV4) {
-        printf("ipv4=%d.%d.%d.%d:%d\n",
-                node->addr.addrinfo.ipv4.addr[0],
-                node->addr.addrinfo.ipv4.addr[1],
-                node->addr.addrinfo.ipv4.addr[2],
-                node->addr.addrinfo.ipv4.addr[3],
-                node->addr.port);
-    } else {
-        printf("port=%d\n", node->addr.port);
-    }
-    printf("=============================================\n\n\n");
-}
-
-
 void ln_print_keys(FILE *fp, const ln_funding_local_data_t *pLocal, const ln_funding_remote_data_t *pRemote)
 {
-#ifdef M_DBG_VERBOSE
+//#ifdef M_DBG_VERBOSE
 #ifdef UCOIN_DEBUG
-    fprintf(fp, "-[local]-------------------------------\n");
-    fprintf(fp, "funding_txid: ");
-    ucoin_util_dumptxid(fp, pLocal->txid);
-    fprintf(fp, "\n");
-    for (int lp = 0; lp < LN_FUNDIDX_MAX; lp++) {
-        fprintf(fp, "%s pri: ", KEYS_STR[lp]);
-        ucoin_util_dumpbin(fp, pLocal->keys[lp].priv, UCOIN_SZ_PRIVKEY, true);
-        fprintf(fp, "%s pub: ", KEYS_STR[lp]);
-        ucoin_util_dumpbin(fp, pLocal->keys[lp].pub, UCOIN_SZ_PUBKEY, true);
-    }
-    fprintf(fp, "\n");
-    for (int lp = 0; lp < LN_SCRIPTIDX_MAX; lp++) {
-        fprintf(fp, "%s pub: ", SCR_STR[lp]);
-        ucoin_util_dumpbin(fp, pLocal->scriptpubkeys[lp], UCOIN_SZ_PUBKEY, true);
-    }
+    fprintf(fp, M_QQ("keys") ": {" M_QQ("local") ": {\n");
 
-    fprintf(fp, "\n-[remote]---------------------------------------\n");
+    fprintf(fp, M_QQ("funding_txid") ": \"");
+    ucoin_util_dumptxid(fp, pLocal->txid);
+    fprintf(fp, "\",\n");
+    fprintf(fp, M_QQ("funding_txindex") ": %" PRIu16 ",\n", pLocal->txindex);
+
     for (int lp = 0; lp < LN_FUNDIDX_MAX; lp++) {
-        fprintf(fp, "%s pub: ", KEYS_STR[lp]);
-        ucoin_util_dumpbin(fp, pRemote->pubkeys[lp], UCOIN_SZ_PUBKEY, true);
+        if (lp != 0) {
+            fprintf(fp, ",\n");
+        }
+        fprintf(fp, "  " M_QQ("%s") ": [\"", KEYS_STR[lp]);
+        ucoin_util_dumpbin(fp, pLocal->keys[lp].priv, UCOIN_SZ_PRIVKEY, false);
+        fprintf(fp, "\", \"");
+        ucoin_util_dumpbin(fp, pLocal->keys[lp].pub, UCOIN_SZ_PUBKEY, false);
+        fprintf(fp, "\"]");
     }
-    fprintf(fp, "\n");
     for (int lp = 0; lp < LN_SCRIPTIDX_MAX; lp++) {
-        fprintf(fp, "%s pub: ", SCR_STR[lp]);
-        ucoin_util_dumpbin(fp, pRemote->scriptpubkeys[lp], UCOIN_SZ_PUBKEY, true);
+        fprintf(fp, ",\n");
+        fprintf(fp, "  " M_QQ("%s") ": \"", SCR_STR[lp]);
+        ucoin_util_dumpbin(fp, pLocal->scriptpubkeys[lp], UCOIN_SZ_PUBKEY, false);
+        fprintf(fp, "\"");
     }
-    fprintf(fp, "prev_percommit: ");
-    ucoin_util_dumpbin(fp, pRemote->prev_percommit, UCOIN_SZ_PUBKEY, true);
-    fprintf(fp, "----------------------------------------\n");
+    fprintf(fp, "},\n");
+
+    fprintf(fp, M_QQ("remote") ": {\n");
+    for (int lp = 0; lp < LN_FUNDIDX_MAX; lp++) {
+        if (lp != 0) {
+            fprintf(fp, ",\n");
+        }
+        fprintf(fp, "  " M_QQ("%s") ": \"", KEYS_STR[lp]);
+        ucoin_util_dumpbin(fp, pRemote->pubkeys[lp], UCOIN_SZ_PUBKEY, false);
+        fprintf(fp, "\"");
+    }
+    for (int lp = 0; lp < LN_SCRIPTIDX_MAX; lp++) {
+        fprintf(fp, ",\n");
+        fprintf(fp, "  " M_QQ("%s") ": \"", SCR_STR[lp]);
+        ucoin_util_dumpbin(fp, pRemote->scriptpubkeys[lp], UCOIN_SZ_PUBKEY, false);
+        fprintf(fp, "\"");
+    }
+    fprintf(fp, ",\n  " M_QQ("prev_percommit") ": \"");
+    ucoin_util_dumpbin(fp, pRemote->prev_percommit, UCOIN_SZ_PUBKEY, false);
+    fprintf(fp, "\"\n}}");
 #endif
-#else
-    (void)fp; (void)pLocal; (void)pRemote;
-#endif  //M_DBG_VERBOSE
+//#else
+//    (void)fp; (void)pLocal; (void)pRemote;
+//#endif  //M_DBG_VERBOSE
 }
 
 #endif  //UCOIN_USE_PRINTFUNC

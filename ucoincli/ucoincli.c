@@ -193,7 +193,7 @@ int main(int argc, char *argv[])
         printf("\t\t-s<1 or 0> : 1=stop auto channel connect\n");
         printf("\t\t-c PEER.CONF : connect node\n");
         printf("\t\t-c PEER NODE_ID or PEER.CONF -f FUND.CONF : funding\n");
-        printf("\t\t-c PEER NODE_ID or PEER.CONF -x : mutual close channel\n");
+        printf("\t\t-c PEER NODE_ID or PEER.CONF -x : mutual/unilateral close channel\n");
         printf("\t\t-c PEER NODE_ID or PEER.CONF -w : get last error\n");
         printf("\t\t-c PEER NODE_ID or PEER.CONF -q : disconnect node\n");
         printf("\n");
@@ -204,6 +204,7 @@ int main(int argc, char *argv[])
         printf("\t\t\tb2 ... force payment_preimage mismatch\n");
         printf("\t\t\tb3 ... no node auto connect\n");
         printf("\t\t-c PEER NODE_ID or PEER.CONF -g : [debug]get commitment transaction\n");
+        printf("\t\t-X CHANNEL_ID : [debug]delete channel from DB\n");
         return -1;
     }
 
@@ -238,6 +239,7 @@ static void optfunc_conn_param(int *pOption, bool *pConn)
         return;
     }
 
+    size_t optlen = strlen(optarg);
     peer_conf_t peer;
     bool bret = load_peer_conf(optarg, &peer);
     if (bret) {
@@ -247,13 +249,29 @@ static void optfunc_conn_param(int *pOption, bool *pConn)
         mPeerPort = peer.port;
         misc_bin2str(mPeerNodeId, peer.node_id, UCOIN_SZ_PUBKEY);
         *pOption = M_OPTIONS_CONN;
-    } else if (strlen(optarg) == UCOIN_SZ_PUBKEY * 2) {
+    } else if (optlen >= (UCOIN_SZ_PUBKEY * 2 + 1 + 7 + 1 + 1)) {
+        // <pubkey>@<ipaddr>:<port>
+        // (33 * 2)@x.x.x.x:x
+        int results = sscanf(optarg, "%66s@%[^:]:%" SCNu16,
+            mPeerNodeId,
+            mPeerAddr,
+            &mPeerPort);
+        printf("id: %s\n", mPeerNodeId);
+        printf("addr: %s\n", mPeerAddr);
+        printf("port: %" PRIu16 "\n", mPeerPort);
+        if (results == 3) {
+            *pConn = true;
+            *pOption = M_OPTIONS_CONN;
+        } else {
+            printf("fail: peer configuration file\n");
+            *pOption = M_OPTIONS_HELP;
+        }
+    } else if (optlen == UCOIN_SZ_PUBKEY * 2) {
         //node_idを直で指定した可能性あり(connectとしては使用できない)
         strcpy(mPeerAddr, "0.0.0.0");
         mPeerPort = 0;
         strcpy(mPeerNodeId, optarg);
         *pOption = M_OPTIONS_CONN;
-        printf("-c node_id\n");
     } else {
         printf("fail: peer configuration file\n");
         *pOption = M_OPTIONS_HELP;
@@ -360,6 +378,8 @@ static void optfunc_funding(int *pOption, bool *pConn)
 
 static void optfunc_invoice(int *pOption, bool *pConn)
 {
+    (void)pConn;
+
     M_CHK_INIT
 
     errno = 0;
@@ -375,7 +395,6 @@ static void optfunc_invoice(int *pOption, bool *pConn)
             "}",
                 amount);
 
-        *pConn = false;
         *pOption = M_OPTIONS_EXEC;
     } else {
         printf("fail: errno=%s\n", strerror(errno));
@@ -511,6 +530,9 @@ static void optfunc_routepay(int *pOption, bool *pConn)
     case LN_INVOICE_TESTNET:
         printf("blockchain: bitcoin testnet\n");
         break;
+    case LN_INVOICE_REGTEST:
+        printf("blockchain: bitcoin regtest\n");
+        break;
     default:
         printf("unknown hrp_type\n");
         *pOption = M_OPTIONS_ERR;
@@ -640,8 +662,6 @@ static void optfunc_debug(int *pOption, bool *pConn)
 
 static void optfunc_getcommittx(int *pOption, bool *pConn)
 {
-    (void)pConn;
-
     M_CHK_CONN
 
     snprintf(mBuf, BUFFER_SIZE,
@@ -654,6 +674,7 @@ static void optfunc_getcommittx(int *pOption, bool *pConn)
         "}",
             mPeerNodeId, mPeerAddr, mPeerPort);
 
+    *pConn = false;
     *pOption = M_OPTIONS_EXEC;
 }
 
@@ -685,8 +706,8 @@ static void optfunc_remove_channel(int *pOption, bool *pConn)
 
     M_CHK_INIT
 
-    if (strlen(optarg) == LN_SZ_CHANNEL_ID * 2) {
-        printf("fail: invalid option\n");
+    if (strlen(optarg) != LN_SZ_CHANNEL_ID * 2) {
+        printf("fail: invalid option: %s\n", optarg);
         *pOption = M_OPTIONS_HELP;
         return;
     }

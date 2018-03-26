@@ -32,9 +32,10 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 
-#include "ln/ln_local.h"
-#include "ln/ln_msg_anno.h"
-#include "ln/ln_misc.h"
+#include "ln_local.h"
+#include "ln_msg_anno.h"
+#include "ln_misc.h"
+#include "ln_signer.h"
 
 #include "ln_db.h"
 #include "ln_db_lmdb.h"
@@ -293,9 +294,13 @@ static const backup_param_t DBCOPY_KEYS[] = {
     M_ITEM(ln_self_t, peer_node_id),
     M_ITEM(ln_self_t, channel_id),
     M_ITEM(ln_self_t, short_channel_id),
+    M_ITEM(ln_self_t, storage_index),
+    M_ITEM(ln_self_t, storage_seed),
     MM_ITEM(ln_self_t, funding_local, ln_funding_local_data_t, txid),
     MM_ITEM(ln_self_t, funding_local, ln_funding_local_data_t, txindex),
     MM_ITEM(ln_self_t, funding_local, ln_funding_local_data_t, keys),
+    MM_ITEM(ln_self_t, funding_remote, ln_funding_remote_data_t, pubkeys),
+    MM_ITEM(ln_self_t, funding_remote, ln_funding_remote_data_t, prev_percommit),
 };
 static const struct {
     enum {
@@ -303,16 +308,25 @@ static const struct {
         ETYPE_UINT64,       //uint64_t
         ETYPE_UINT16,       //uint16_t
         ETYPE_TXID,         //txid
+        ETYPE_FUNDTXID,     //funding_local.txid
+        ETYPE_FUNDTXIDX,    //funding_local.txindex
+        ETYPE_LOCALKEYS,    //funding_local.keys
+        ETYPE_REMOTEKEYS,   //funding_remote.publickeys
+        ETYPE_REMOTECOMM,   //funding_remote.prev_percommit
     } type;
-    int offset;
     int length;
+    bool disp;
 } DBCOPY_IDX[] = {
-    { ETYPE_BYTEPTR,    0,  33  },      // peer_node_id
-    { ETYPE_BYTEPTR,    0,  32  },      // channel_id
-    { ETYPE_UINT64,     0,  1   },      // short_channel_id
-    { ETYPE_TXID,       0,  32  },      // funding_local.txid
-    { ETYPE_UINT16,     0,  1   },      // funding_local.txindex
-    { ETYPE_BYTEPTR,    32, 33  }       // funding_local.keys.pub
+    { ETYPE_BYTEPTR,    UCOIN_SZ_PUBKEY, true },    // peer_node_id
+    { ETYPE_BYTEPTR,    LN_SZ_CHANNEL_ID, true },   // channel_id
+    { ETYPE_UINT64,     1, true },                  // short_channel_id
+    { ETYPE_UINT64,     1, true },                  // storage_index
+    { ETYPE_BYTEPTR,    LN_SZ_SEED, false },        // storage_seed
+    { ETYPE_FUNDTXID,   UCOIN_SZ_TXID, false },     // funding_local.txid
+    { ETYPE_FUNDTXIDX,  1, false },                 // funding_local.txindex
+    { ETYPE_LOCALKEYS,  1, false },                 // funding_local.keys
+    { ETYPE_REMOTEKEYS, 1, false },                 // funding_remote.keys
+    { ETYPE_REMOTECOMM, 1, false },                 // funding_remote.prev_percommit
 };
 
 
@@ -490,11 +504,9 @@ bool HIDDEN ln_db_init(char *pWif, char *pNodeName, uint16_t *pPort)
         //      aliase : 指定が無ければ生成
         //      port : 指定された値
         DBG_PRINTF("create node DB\n");
-        uint8_t priv[UCOIN_SZ_PRIVKEY];
-        do {
-            ucoin_util_random(priv, UCOIN_SZ_PRIVKEY);
-        } while (!ucoin_keys_chkpriv(priv));
-        ucoin_keys_priv2wif(pWif, priv);
+        ucoin_util_keys_t keys;
+        ln_signer_create_nodekey(&keys);
+        ucoin_keys_priv2wif(pWif, keys.priv);
 
         char nodename[LN_SZ_ALIAS];
         if (pNodeName == NULL) {
@@ -502,10 +514,9 @@ bool HIDDEN ln_db_init(char *pWif, char *pNodeName, uint16_t *pPort)
             nodename[0] = '\0';
         }
         if (strlen(pNodeName) == 0) {
-            uint8_t pub[UCOIN_SZ_PUBKEY];
-            ucoin_keys_priv2pub(pub, priv);
             sprintf(pNodeName, "node_%02x%02x%02x%02x%02x%02x",
-                        pub[0], pub[1], pub[2], pub[3], pub[4], pub[5]);
+                        keys.pub[0], keys.pub[1], keys.pub[2],
+                        keys.pub[3], keys.pub[4], keys.pub[5]);
         }
         //DBG_PRINTF("wif=%s\n", pWif);
         DBG_PRINTF("aliase=%s\n", pNodeName);
@@ -613,7 +624,7 @@ int ln_lmdb_self_load(ln_self_t *self, MDB_txn *txn, MDB_dbi dbi)
     M_BUF_ITEM(index, shutdown_scriptpk_local);
     index++;
     M_BUF_ITEM(index, shutdown_scriptpk_remote);
-    index++;
+    //index++;
 
     for (size_t lp = 0; lp < M_SELF_BUFS; lp++) {
         key.mv_size = strlen(p_dbscript_keys[lp].name);
@@ -795,6 +806,7 @@ bool ln_db_self_search(ln_db_func_cmp_t pFunc, void *pFuncParam)
         goto LABEL_EXIT;
     }
 
+    ln_self_t *p_self = (ln_self_t *)M_MALLOC(sizeof(ln_self_t));
     bool ret;
     MDB_val     key;
     char name[M_SZ_DBNAME_LEN + 1];
@@ -804,17 +816,15 @@ bool ln_db_self_search(ln_db_func_cmp_t pFunc, void *pFuncParam)
             memcpy(name, key.mv_data, M_SZ_DBNAME_LEN);
             ret = mdb_dbi_open(cur.txn, name, 0, &cur.dbi);
             if (ret == 0) {
-                ln_self_t self;
-
-                memset(&self, 0, sizeof(self));
-                retval = ln_lmdb_self_load(&self, cur.txn, cur.dbi);
+                memset(p_self, 0, sizeof(ln_self_t));
+                retval = ln_lmdb_self_load(p_self, cur.txn, cur.dbi);
                 if (retval == 0) {
-                    result = (*pFunc)(&self, (void *)&cur, pFuncParam);
+                    result = (*pFunc)(p_self, (void *)&cur, pFuncParam);
                     if (result) {
                         DBG_PRINTF("match !\n");
                         break;
                     }
-                    ln_term(&self);     //falseのみ解放
+                    ln_term(p_self);     //falseのみ解放
                 } else {
                     DBG_PRINTF("ERR: %s\n", mdb_strerror(retval));
                 }
@@ -825,6 +835,7 @@ bool ln_db_self_search(ln_db_func_cmp_t pFunc, void *pFuncParam)
     }
     mdb_cursor_close(cur.cursor);
     MDB_TXN_COMMIT(cur.txn);
+    M_FREE(p_self);
 
 LABEL_EXIT:
     return result;
@@ -854,36 +865,87 @@ bool ln_db_self_save_closeflg(const ln_self_t *self, void *pDbParam)
 }
 
 
+#define M_DEBUG_KEYS
+#define M_SIZE(type, mem)       (sizeof(((type *)0)->mem))
 void ln_lmdb_bkself_show(MDB_txn *txn, MDB_dbi dbi)
 {
     MDB_val         key, data;
+#ifdef M_DEBUG_KEYS
+    ln_funding_local_data_t     local;
+    ln_funding_remote_data_t    remote;
+    memset(&local, 0, sizeof(local));
+    memset(&remote, 0, sizeof(remote));
+#endif  //M_DEBUG_KEYS
 
     for (size_t lp = 0; lp < ARRAY_SIZE(DBCOPY_KEYS); lp++) {
         key.mv_size = strlen(DBCOPY_KEYS[lp].name);
         key.mv_data = (CONST_CAST char*)DBCOPY_KEYS[lp].name;
         int retval = mdb_get(txn, dbi, &key, &data);
         if (retval == 0) {
-            const uint8_t *p = (const uint8_t *)data.mv_data + DBCOPY_IDX[lp].offset;
-            if (lp != 0) {
+            const uint8_t *p = (const uint8_t *)data.mv_data;
+            if ((lp != 0) && (DBCOPY_IDX[lp].disp)) {
                 fprintf(PRINTOUT, ",\n");
             }
-            fprintf(PRINTOUT, "\"%s\": ", DBCOPY_KEYS[lp].name);
+            if (DBCOPY_IDX[lp].disp) {
+                fprintf(PRINTOUT, "\"%s\": ", DBCOPY_KEYS[lp].name);
+            }
             switch (DBCOPY_IDX[lp].type) {
-            case 0: //const uint8_t*
-                fprintf(PRINTOUT, "\"");
-                ucoin_util_dumpbin(PRINTOUT, p, DBCOPY_IDX[lp].length, false);
-                fprintf(PRINTOUT, "\"");
+            case ETYPE_BYTEPTR: //const uint8_t*
+            case ETYPE_REMOTECOMM:
+                if (DBCOPY_IDX[lp].disp) {
+                    fprintf(PRINTOUT, "\"");
+                    ucoin_util_dumpbin(PRINTOUT, p, DBCOPY_IDX[lp].length, false);
+                    fprintf(PRINTOUT, "\"");
+                }
+#ifdef M_DEBUG_KEYS
+                if (DBCOPY_IDX[lp].type == ETYPE_REMOTECOMM) {
+                    memcpy(remote.prev_percommit, p, DBCOPY_IDX[lp].length);
+                }
+#endif  //M_DEBUG_KEYS
                 break;
-            case 1:
-                fprintf(PRINTOUT, "\"%" PRIx64 "\"", *(const uint64_t *)p);
+            case ETYPE_UINT64:
+                if (DBCOPY_IDX[lp].disp) {
+                    fprintf(PRINTOUT, "\"%" PRIx64 "\"", *(const uint64_t *)p);
+                }
                 break;
-            case 2:
-                fprintf(PRINTOUT, "%" PRIu16, *(const uint16_t *)p);
+            case ETYPE_UINT16:
+            case ETYPE_FUNDTXIDX:
+                if (DBCOPY_IDX[lp].disp) {
+                    fprintf(PRINTOUT, "%" PRIu16, *(const uint16_t *)p);
+                }
+#ifdef M_DEBUG_KEYS
+                if (DBCOPY_IDX[lp].type == ETYPE_FUNDTXIDX) {
+                    local.txindex = *(const uint16_t *)p;
+                }
+#endif  //M_DEBUG_KEYS
                 break;
-            case 3: //txid
-                fprintf(PRINTOUT, "\"");
-                ucoin_util_dumptxid(PRINTOUT, p);
-                fprintf(PRINTOUT, "\"");
+            case ETYPE_TXID: //txid
+            case ETYPE_FUNDTXID:
+                if (DBCOPY_IDX[lp].disp) {
+                    fprintf(PRINTOUT, "\"");
+                    ucoin_util_dumptxid(PRINTOUT, p);
+                    fprintf(PRINTOUT, "\"");
+                }
+#ifdef M_DEBUG_KEYS
+                if (DBCOPY_IDX[lp].type == ETYPE_FUNDTXID) {
+                    memcpy(local.txid, p, DBCOPY_IDX[lp].length);
+                }
+#endif  //M_DEBUG_KEYS
+                break;
+            case ETYPE_LOCALKEYS: //funding_local.keys
+#ifdef M_DEBUG_KEYS
+                {
+                    const ucoin_util_keys_t *p_keys = (const ucoin_util_keys_t *)p;
+                    memcpy(local.keys, p_keys, M_SIZE(ln_funding_local_data_t, keys));
+                }
+#endif  //M_DEBUG_KEYS
+                break;
+            case ETYPE_REMOTEKEYS: //funding_remote.keys
+#ifdef M_DEBUG_KEYS
+                {
+                    memcpy(remote.pubkeys, p, M_SIZE(ln_funding_remote_data_t, pubkeys));
+                }
+#endif  //M_DEBUG_KEYS
                 break;
             default:
                 break;
@@ -892,6 +954,14 @@ void ln_lmdb_bkself_show(MDB_txn *txn, MDB_dbi dbi)
             DBG_PRINTF("fail: %s\n", DBCOPY_KEYS[lp].name);
         }
     }
+#ifdef M_DEBUG_KEYS
+    if ( ((local.keys[0].pub[0] == 0x02) || (local.keys[0].pub[0] == 0x03)) &&
+         ((remote.pubkeys[0][0] == 0x02) || (remote.pubkeys[0][0] == 0x03))) {
+        fprintf(PRINTOUT, ",\n");
+        ln_misc_update_scriptkeys(&local, &remote);
+        //ln_print_keys(PRINTOUT, &local, &remote);
+    }
+#endif  //M_DEBUG_KEYS
 }
 
 /********************************************************************
@@ -2427,6 +2497,18 @@ LABEL_EXIT:
 }
 
 
+int ln_db_lmdb_get_mynodeid(MDB_txn *txn, MDB_dbi dbi, char *wif, char *alias, uint16_t *p_port, uint8_t *genesis)
+{
+    int             retval;
+    ln_lmdb_db_t    db;
+
+    db.txn = txn;
+    db.dbi = dbi;
+    retval = ver_check(&db, wif, alias, p_port, genesis);
+    return retval;
+}
+
+
 /********************************************************************
  * others
  ********************************************************************/
@@ -2546,7 +2628,7 @@ static int self_addhtlc_load(ln_self_t *self, ln_lmdb_db_t *pDb)
     MDB_val     key, data;
     char        dbname[M_SZ_DBNAME_LEN + M_SZ_HTLC_STR + 1];
 
-    void *OFFSET = ((uint8_t *)self) + offsetof(ln_self_t, cnl_add_htlc);
+    uint8_t *OFFSET = ((uint8_t *)self) + offsetof(ln_self_t, cnl_add_htlc);
 
     misc_bin2str(dbname + M_PREFIX_LEN, self->channel_id, LN_SZ_CHANNEL_ID);
     memcpy(dbname, M_PREF_ADDHTLC, M_PREFIX_LEN);
@@ -2598,7 +2680,7 @@ static int self_addhtlc_save(const ln_self_t *self, ln_lmdb_db_t *pDb)
     MDB_val     key, data;
     char        dbname[M_SZ_DBNAME_LEN + M_SZ_HTLC_STR + 1];
 
-    void *OFFSET = ((uint8_t *)self) + offsetof(ln_self_t, cnl_add_htlc);
+    uint8_t *OFFSET = ((uint8_t *)self) + offsetof(ln_self_t, cnl_add_htlc);
 
     misc_bin2str(dbname + M_PREFIX_LEN, self->channel_id, LN_SZ_CHANNEL_ID);
     memcpy(dbname, M_PREF_ADDHTLC, M_PREFIX_LEN);
@@ -2673,6 +2755,7 @@ static int self_save(const ln_self_t *self, ln_lmdb_db_t *pDb)
     M_BUF_ITEM(index, shutdown_scriptpk_local);
     index++;
     M_BUF_ITEM(index, shutdown_scriptpk_remote);
+    //index++;
 
     for (size_t lp = 0; lp < M_SELF_BUFS; lp++) {
         key.mv_size = strlen(p_dbscript_keys[lp].name);

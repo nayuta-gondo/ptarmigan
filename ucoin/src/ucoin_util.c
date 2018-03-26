@@ -112,12 +112,17 @@ bool ucoin_util_wif2keys(ucoin_util_keys_t *pKeys, ucoin_chain_t *pChain, const 
 }
 
 
-bool ucoin_util_createkeys(ucoin_util_keys_t *pKeys)
+void ucoin_util_createprivkey(uint8_t *pPriv)
 {
     do {
-        ucoin_util_random(pKeys->priv, UCOIN_SZ_PRIVKEY);
-    } while (!ucoin_keys_chkpriv(pKeys->priv));
+        ucoin_util_random(pPriv, UCOIN_SZ_PRIVKEY);
+    } while (!ucoin_keys_chkpriv(pPriv));
+}
 
+
+bool ucoin_util_createkeys(ucoin_util_keys_t *pKeys)
+{
+    ucoin_util_createprivkey(pKeys->priv);
     bool ret = ucoin_keys_priv2pub(pKeys->pub, pKeys->priv);
     return ret;
 }
@@ -640,16 +645,19 @@ bool HIDDEN ucoin_util_keys_pkh2addr(char *pAddr, const uint8_t *pPubKeyHash, ui
     uint8_t buf_sha256[UCOIN_SZ_HASH256];
 
     if (Prefix == UCOIN_PREF_NATIVE) {
-        uint8_t pkh[3 + UCOIN_SZ_PUBKEYHASH + 4];
-        size_t sz = UCOIN_SZ_WPKHADDR;
+        DBG_PRINTF("FATAL: not BECH32 supported\n");
+        assert(false);
 
-        pkh[0] = mPref[UCOIN_PREF_ADDRVER];
-        pkh[1] = 0x00;
-        pkh[2] = 0x00;
-        memcpy(pkh + 3, pPubKeyHash, UCOIN_SZ_PUBKEYHASH);
-        ucoin_util_hash256(buf_sha256, pkh, 3 + UCOIN_SZ_PUBKEYHASH);
-        memcpy(pkh + 3 + UCOIN_SZ_PUBKEYHASH, buf_sha256, 4);
-        ret = b58enc(pAddr, &sz, pkh, sizeof(pkh));
+        // uint8_t pkh[3 + UCOIN_SZ_PUBKEYHASH + 4];
+        // size_t sz = UCOIN_SZ_ADDR_MAX;
+
+        // pkh[0] = mPref[UCOIN_PREF_ADDRVER];
+        // pkh[1] = 0x00;
+        // pkh[2] = 0x00;
+        // memcpy(pkh + 3, pPubKeyHash, UCOIN_SZ_PUBKEYHASH);
+        // ucoin_util_hash256(buf_sha256, pkh, 3 + UCOIN_SZ_PUBKEYHASH);
+        // memcpy(pkh + 3 + UCOIN_SZ_PUBKEYHASH, buf_sha256, 4);
+        // ret = b58enc(pAddr, &sz, pkh, sizeof(pkh));
     } else {
         uint8_t pkh[1 + UCOIN_SZ_PUBKEYHASH + 4];
         size_t sz = UCOIN_SZ_ADDR_MAX;

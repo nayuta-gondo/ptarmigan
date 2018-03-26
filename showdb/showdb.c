@@ -75,8 +75,6 @@
  * prototypes
  ********************************************************************/
 
-void ln_print_wallet(const ln_self_t *self);
-void ln_print_self(const ln_self_t *self);
 void ln_print_announce(const uint8_t *pData, uint16_t Len);
 void ln_print_announce_short(const uint8_t *pData, uint16_t Len);
 void ln_print_peerconf(FILE *fp, const uint8_t *pData, uint16_t Len);
@@ -91,7 +89,6 @@ static uint16_t     showflag = SHOW_DEFAULT;
 static int          cnt0;
 static int          cnt1;
 static int          cnt2;
-static int          cnt3;
 static int          cnt4;
 static int          cnt5;
 static MDB_env      *mpDbSelf = NULL;
@@ -99,18 +96,172 @@ static MDB_env      *mpDbNode = NULL;
 static FILE         *fp_err;
 
 
+static const char *KEYS_STR[LN_FUNDIDX_MAX] = {
+    "bp_funding", "bp_revocation", "bp_payment", "bp_delayed", "bp_htlc", "bp_per_commit"
+};
+static const char *SCR_STR[LN_SCRIPTIDX_MAX] = {
+    "remotekey", "delayedkey", "revocationkey", "local_htlckey", "remote_htlckey"
+};
+
+
 /********************************************************************
  * functions
  ********************************************************************/
+
+static void ln_print_wallet(const ln_self_t *self)
+{
+    printf("{\n");
+    printf(M_QQ("node_id") ": \"");
+    ucoin_util_dumpbin(stdout, self->peer_node_id, UCOIN_SZ_PUBKEY, false);
+    printf("\",\n");
+    printf(M_QQ("channel_id") ": \"");
+    ucoin_util_dumpbin(stdout, self->channel_id, LN_SZ_CHANNEL_ID, false);
+    printf("\",\n");
+    printf(M_QQ("short_channel_id") ": " M_QQ("%016" PRIx64) ",\n", self->short_channel_id);
+    if (self->htlc_num != 0) {
+        printf(M_QQ("htlc_num") ": %d,", self->htlc_num);
+    }
+    printf(M_QQ("our_msat") ": %" PRIu64 ",\n", self->our_msat);
+    printf(M_QQ("their_msat") ": %" PRIu64 "\n", self->their_msat);
+    printf("}\n");
+}
+
+static void ln_print_self(const ln_self_t *self)
+{
+    printf("{\n");
+
+    //peer_node
+    printf(M_QQ("peer_node_id") ": \"");
+    ucoin_util_dumpbin(stdout, self->peer_node_id, UCOIN_SZ_PUBKEY, false);
+    printf("\",");
+
+    //key storage
+    printf(M_QQ("storage_index") ": " M_QQ("%016" PRIx64) ",\n", self->storage_index);
+    printf(M_QQ("storage_seed") ": \"");
+    ucoin_util_dumpbin(stdout, self->storage_seed, UCOIN_SZ_PRIVKEY, false);
+    printf("\",\n");
+    printf(M_QQ("peer_storage_index") ": " M_QQ("%016" PRIx64) ",\n", self->peer_storage_index);
+
+    //funding
+    printf(M_QQ("fund_flag") ": " M_QQ("%02x") ",", self->fund_flag);
+    printf(M_QQ("funding_local") ": {\n");
+    printf(M_QQ("funding_txid") ": \"");
+    ucoin_util_dumptxid(stdout, self->funding_local.txid);
+    printf("\",\n");
+    printf(M_QQ("funding_txindex") ": %d,\n", self->funding_local.txindex);
+    for (int lp = 0; lp < LN_FUNDIDX_MAX; lp++) {
+        printf(M_QQ("%s") ": ", KEYS_STR[lp]);
+        printf("{");
+        printf(M_QQ("priv") ": \"");
+        ucoin_util_dumpbin(stdout, self->funding_local.keys[lp].priv, UCOIN_SZ_PRIVKEY, false);
+        printf("\",");
+        printf(M_QQ("pub") ": \"");
+        ucoin_util_dumpbin(stdout, self->funding_local.keys[lp].pub, UCOIN_SZ_PUBKEY, false);
+        printf("\"},\n");
+    }
+    for (int lp = 0; lp < LN_SCRIPTIDX_MAX; lp++) {
+        printf(M_QQ("%s") ": ", SCR_STR[lp]);
+        printf("{");
+        printf(M_QQ("pub") ": \"");
+        ucoin_util_dumpbin(stdout, self->funding_local.scriptpubkeys[lp], UCOIN_SZ_PUBKEY, false);
+        if (lp != LN_SCRIPTIDX_MAX - 1) {
+            printf("\"},\n");
+        } else {
+            printf("\"}\n");
+        }
+    }
+    printf("},\n");
+    printf(M_QQ("funding_remote") ": {\n");
+    for (int lp = 0; lp < LN_FUNDIDX_MAX; lp++) {
+        printf(M_QQ("%s") ": ", KEYS_STR[lp]);
+        printf("{");
+        printf(M_QQ("pub") ": \"");
+        ucoin_util_dumpbin(stdout, self->funding_remote.pubkeys[lp], UCOIN_SZ_PUBKEY, false);
+        printf("\"},\n");
+    }
+    printf(M_QQ("%s") ": \"", "prev_percommit");
+    ucoin_util_dumpbin(stdout, self->funding_remote.prev_percommit, UCOIN_SZ_PUBKEY, false);
+    printf("\",\n");
+    for (int lp = 0; lp < LN_SCRIPTIDX_MAX; lp++) {
+        printf(M_QQ("%s") ": ", SCR_STR[lp]);
+        printf("{");
+        printf(M_QQ("pub") ": \"");
+        ucoin_util_dumpbin(stdout, self->funding_remote.scriptpubkeys[lp], UCOIN_SZ_PUBKEY, false);
+        if (lp != LN_SCRIPTIDX_MAX - 1) {
+            printf("\"},\n");
+        } else {
+            printf("\"}\n");
+        }
+    }
+    printf("},\n");
+    printf(M_QQ("obscured") ": " M_QQ("%016" PRIx64) ",\n", self->obscured);
+    printf(M_QQ("redeem_fund") ": \"");
+    ucoin_util_dumpbin(stdout, self->redeem_fund.buf, self->redeem_fund.len, false);
+    printf("\",\n");
+    printf(M_QQ("key_fund_sort") ": " M_QQ("%s") ",\n", (self->key_fund_sort == UCOIN_KEYS_SORT_ASC) ? "first" : "second");
+    printf(M_QQ("min_depth") ": %" PRIu32 ",\n", self->min_depth);
+
+    //announce
+    printf(M_QQ("anno_flag") ": " M_QQ("%02x") ",\n", self->anno_flag);
+
+    //init
+    printf(M_QQ("lfeature_remote") ": " M_QQ("%02x") ",\n", self->lfeature_remote);
+
+    //normal operation
+    printf(M_QQ("htlc_num") ": %d,\n", self->htlc_num);
+    printf(M_QQ("commit_num") ": %" PRIu64 ",\n", self->commit_num);
+    printf(M_QQ("revoke_num") ": %" PRIu64 ",\n", self->revoke_num);
+    printf(M_QQ("remote_commit_num") ": %" PRIu64 ",\n", self->remote_commit_num);
+    printf(M_QQ("remote_revoke_num") ": %" PRIu64 ",\n", self->remote_revoke_num);
+    printf(M_QQ("htlc_id_num") ": %" PRIu64 ",\n", self->htlc_id_num);
+    printf(M_QQ("our_msat") ": %" PRIu64 ",\n", self->our_msat);
+    printf(M_QQ("their_msat") ": %" PRIu64 ",\n", self->their_msat);
+    printf(M_QQ("channel_id") ": \"");
+    ucoin_util_dumpbin(stdout, self->channel_id, LN_SZ_CHANNEL_ID, false);
+    printf("\",\n");
+    printf(M_QQ("short_channel_id") ": " M_QQ("%016" PRIx64) ",\n", self->short_channel_id);
+
+    printf(M_QQ("commit_local") ": {\n");
+    printf(M_QQ("accept_htlcs") ": %" PRIu32 ",\n", self->commit_local.accept_htlcs);
+    printf(M_QQ("to_self_delay") ": %" PRIu32 ",\n", self->commit_local.to_self_delay);
+    printf(M_QQ("minimum_msat") ": %" PRIu64 ",\n", self->commit_local.minimum_msat);
+    printf(M_QQ("in_flight_msat") ": %" PRIu64 ",\n", self->commit_local.in_flight_msat);
+    printf(M_QQ("dust_limit_sat") ": %" PRIu64 ",\n", self->commit_local.dust_limit_sat);
+    printf(M_QQ("commit_txid") ": \"");
+    ucoin_util_dumptxid(stdout, self->commit_local.txid);
+    printf("\",\n");
+    printf(M_QQ("htlc_num") ": %" PRIu32 "\n", self->commit_local.htlc_num);
+
+    printf("},\n");
+
+    printf(M_QQ("commit_remote") ": {\n");
+    printf(M_QQ("accept_htlcs") ": %" PRIu32 ",\n", self->commit_remote.accept_htlcs);
+    printf(M_QQ("to_self_delay") ": %" PRIu32 ",\n", self->commit_remote.to_self_delay);
+    printf(M_QQ("minimum_msat")  ":%" PRIu64 ",\n", self->commit_remote.minimum_msat);
+    printf(M_QQ("in_flight_msat") ": %" PRIu64 ",\n", self->commit_remote.in_flight_msat);
+    printf(M_QQ("dust_limit_sat") ": %" PRIu64 ",\n", self->commit_remote.dust_limit_sat);
+    printf(M_QQ("commit_txid") ": \"");
+    ucoin_util_dumptxid(stdout, self->commit_remote.txid);
+    printf("\",\n");
+    printf(M_QQ("htlc_num") ": %" PRIu32 "\n", self->commit_remote.htlc_num);
+    printf("},\n");
+
+    printf(M_QQ("funding_sat") ": %" PRIu64 ",\n", self->funding_sat);
+    printf(M_QQ("feerate_per_kw") ": %" PRIu32 ",\n", self->feerate_per_kw);
+
+    printf(M_QQ("err") ": %d\n", self->err);
+
+    printf("}\n");
+}
 
 static void dumpit_self(MDB_txn *txn, MDB_dbi dbi)
 {
     //self
     if (showflag & (SHOW_SELF | SHOW_WALLET | SHOW_CH)) {
-        ln_self_t self;
-        memset(&self, 0, sizeof(self));
+        ln_self_t *p_self = (ln_self_t *)malloc(sizeof(ln_self_t));
+        memset(p_self, 0, sizeof(ln_self_t));
 
-        int retval = ln_lmdb_self_load(&self, txn, dbi);
+        int retval = ln_lmdb_self_load(p_self, txn, dbi);
         if (retval != 0) {
             printf(M_QQ("load") ":" M_QQ("%s"), mdb_strerror(retval));
             return;
@@ -133,17 +284,18 @@ static void dumpit_self(MDB_txn *txn, MDB_dbi dbi)
         }
 
         if (showflag & SHOW_SELF) {
-            ln_print_self(&self);
+            ln_print_self(p_self);
         }
         if (showflag & SHOW_WALLET) {
-            ln_print_wallet(&self);
+            ln_print_wallet(p_self);
         }
         if (showflag & SHOW_CH) {
             printf("\"");
-            ucoin_util_dumpbin(stdout, self.peer_node_id, UCOIN_SZ_PUBKEY, false);
+            ucoin_util_dumpbin(stdout, p_self->peer_node_id, UCOIN_SZ_PUBKEY, false);
             printf("\"");
         }
-        ln_term(&self);
+        ln_term(p_self);
+        free(p_self);
         cnt0++;
     }
 }
@@ -188,13 +340,6 @@ static void dumpit_channel(MDB_txn *txn, MDB_dbi dbi)
             ucoin_buf_init(&buf);
             ret = ln_lmdb_annocnl_cur_load(cursor, &short_channel_id, &type, &timestamp, &buf);
             if ((ret == 0) && (short_channel_id != 0)) {
-                if (type == LN_DB_CNLANNO_ANNO) {
-                    if (cnt1) {
-                        printf("],");
-                    }
-                    printf("\n[\n");
-                    cnt1 = 0;
-                }
                 if (cnt1) {
                     printf(",");
                 }
@@ -414,10 +559,6 @@ static void dumpit_version(MDB_txn *txn, MDB_dbi dbi)
 {
     //version
     if (showflag == SHOW_VERSION) {
-        if (cnt3) {
-            printf(",");
-        }
-
         MDB_val key, data;
 
         key.mv_size = LNDBK_LEN(LNDBK_VER);
@@ -425,19 +566,24 @@ static void dumpit_version(MDB_txn *txn, MDB_dbi dbi)
         int retval = mdb_get(txn, dbi, &key, &data);
         if (retval == 0) {
             int version = *(int *)data.mv_data;
-            printf(M_QQ("version") ": [ %d\n", version);
+            printf(M_QQ("version") ": %d", version);
         }
 
-        key.mv_size = LNDBK_LEN(LNDBK_NODEID);
-        key.mv_data = LNDBK_NODEID;
-        retval = mdb_get(txn, dbi, &key, &data);
-        if ((retval == 0) && (data.mv_size == UCOIN_SZ_PUBKEY)) {
-            const uint8_t *p = (const uint8_t *)data.mv_data;
-            printf(", \"");
-            ucoin_util_dumpbin(stdout, p, UCOIN_SZ_PUBKEY, false);
-            printf("\"");
+        char wif[UCOIN_SZ_WIF_MAX];
+        char alias[LN_SZ_ALIAS];
+        uint16_t port;
+        uint8_t genesis[LN_SZ_HASH];
+        retval = ln_db_lmdb_get_mynodeid(txn, dbi, wif, alias, &port, genesis);
+        if (retval == 0) {
+            printf(",\n");
+            printf(M_QQ("genesis") ": \"");
+            ucoin_util_dumpbin(stdout, genesis, LN_SZ_HASH, false);
+            printf("\",\n");
+
+            printf(M_QQ("wif") ": " M_QQ("%s") ",\n", wif);
+            printf(M_QQ("alias") ": " M_QQ("%s") ",\n", alias);
+            printf(M_QQ("port") ": %" PRIu16 "\n", port);
         }
-        cnt3++;
     }
 }
 
@@ -670,7 +816,7 @@ int main(int argc, char *argv[])
         }
         free(name);
     }
-    if (cnt0 || cnt1 || cnt2 || cnt3 || cnt4 || cnt5) {
+    if (cnt0 || cnt2 || cnt4 || cnt5) {
         printf("]");
     }
     printf("}\n");
