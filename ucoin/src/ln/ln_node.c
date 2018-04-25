@@ -58,6 +58,7 @@ static ln_node_t    mNode;
  **************************************************************************/
 
 static bool comp_func_cnl(ln_self_t *self, void *p_db_param, void *p_param);
+static bool comp_func_total_msat(ln_self_t *self, void *p_db_param, void *p_param);
 static bool comp_node_addr(const ln_nodeaddr_t *pAddr1, const ln_nodeaddr_t *pAddr2);
 static void print_node(void);
 
@@ -88,8 +89,7 @@ bool ln_node_init(uint8_t Features)
     bool ret;
     char wif[UCOIN_SZ_WIF_MAX];
     ucoin_chain_t chain;
-    ucoin_buf_t buf_node;
-    ucoin_buf_init(&buf_node);
+    ucoin_buf_t buf_node = UCOIN_BUF_INIT;
 
     mNode.features = Features;
 
@@ -185,9 +185,8 @@ bool ln_node_search_channel(ln_self_t *self, const uint8_t *pNodeId)
 
 bool ln_node_search_nodeanno(ln_node_announce_t *pNodeAnno, const uint8_t *pNodeId)
 {
-    ucoin_buf_t buf_anno;
+    ucoin_buf_t buf_anno = UCOIN_BUF_INIT;
 
-    ucoin_buf_init(&buf_anno);
     bool ret = ln_db_annonod_load(&buf_anno, NULL, pNodeId);
     if (ret) {
         pNodeAnno->p_node_id = NULL;
@@ -200,6 +199,14 @@ bool ln_node_search_nodeanno(ln_node_announce_t *pNodeAnno, const uint8_t *pNode
     ucoin_buf_free(&buf_anno);
 
     return ret;
+}
+
+
+uint64_t ln_node_total_msat(void)
+{
+    uint64_t amount = 0;
+    ln_db_self_search(comp_func_total_msat, &amount);
+    return amount;
 }
 
 
@@ -292,9 +299,8 @@ static bool comp_func_cnl(ln_self_t *self, void *p_db_param, void *p_param)
             ln_db_copy_channel(p->p_self, self);
 
             if (p->p_self->short_channel_id != 0) {
-                ucoin_buf_t buf;
+                ucoin_buf_t buf = UCOIN_BUF_INIT;
 
-                ucoin_buf_init(&buf);
                 bool bret2 = ln_db_annocnl_load(&p->p_self->cnl_anno, p->p_self->short_channel_id);
                 if (bret2) {
                     ucoin_buf_alloccopy(&p->p_self->cnl_anno, buf.buf, buf.len);
@@ -307,6 +313,25 @@ static bool comp_func_cnl(ln_self_t *self, void *p_db_param, void *p_param)
         }
     }
     return ret;
+}
+
+
+/** #ln_node_search_channel()処理関数
+ * 
+ * our_msatの総額を求める。
+ *
+ * @param[in,out]   self            DBから取得したself
+ * @param[in,out]   p_db_param      DB情報(ln_dbで使用する)
+ * @param[in,out]   p_param         uint64_t
+ */
+static bool comp_func_total_msat(ln_self_t *self, void *p_db_param, void *p_param)
+{
+    (void)p_db_param;
+    uint64_t *p_amount = (uint64_t *)p_param;
+
+    //DBG_PRINTF("our_msat:%" PRIu64 "\n", ln_our_msat(self));
+    *p_amount += ln_our_msat(self);
+    return false;
 }
 
 

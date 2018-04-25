@@ -305,11 +305,8 @@ static const backup_param_t DBCOPY_KEYS[] = {
     M_ITEM(ln_self_t, peer_node_id),
     M_ITEM(ln_self_t, channel_id),
     M_ITEM(ln_self_t, short_channel_id),
-    // M_ITEM(ln_self_t, storage_index),
-    // M_ITEM(ln_self_t, storage_seed),
     MM_ITEM(ln_self_t, funding_local, ln_funding_local_data_t, txid),
     MM_ITEM(ln_self_t, funding_local, ln_funding_local_data_t, txindex),
-    // MM_ITEM(ln_self_t, funding_local, ln_funding_local_data_t, keys),
     MM_ITEM(ln_self_t, funding_local, ln_funding_local_data_t, pubkeys),
     MM_ITEM(ln_self_t, funding_remote, ln_funding_remote_data_t, pubkeys),
     MM_ITEM(ln_self_t, funding_remote, ln_funding_remote_data_t, prev_percommit),
@@ -332,12 +329,10 @@ static const struct {
     { ETYPE_BYTEPTR,    UCOIN_SZ_PUBKEY, true },    // peer_node_id
     { ETYPE_BYTEPTR,    LN_SZ_CHANNEL_ID, true },   // channel_id
     { ETYPE_UINT64,     1, true },                  // short_channel_id
-    { ETYPE_UINT64,     1, true },                  // storage_index
-    { ETYPE_BYTEPTR,    LN_SZ_SEED, false },        // storage_seed
     { ETYPE_FUNDTXID,   UCOIN_SZ_TXID, false },     // funding_local.txid
     { ETYPE_FUNDTXIDX,  1, false },                 // funding_local.txindex
-    { ETYPE_LOCALKEYS,  1, false },                 // funding_local.keys
-    { ETYPE_REMOTEKEYS, 1, false },                 // funding_remote.keys
+    { ETYPE_LOCALKEYS,  1, false },                 // funding_local.pubkeys
+    { ETYPE_REMOTEKEYS, 1, false },                 // funding_remote.pubkeys
     { ETYPE_REMOTECOMM, 1, false },                 // funding_remote.prev_percommit
 };
 
@@ -615,8 +610,7 @@ int ln_lmdb_self_load(ln_self_t *self, MDB_txn *txn, MDB_dbi dbi)
             self->funding_remote.pubkeys[MSG_FUNDIDX_FUNDING]);
 
     //可変サイズ
-    ucoin_buf_t buf_funding;
-    ucoin_buf_init(&buf_funding);
+    ucoin_buf_t buf_funding = UCOIN_BUF_INIT;
     //
     backup_buf_t *p_dbscript_keys = (backup_buf_t *)M_MALLOC(sizeof(backup_buf_t) * M_SELF_BUFS);
     int index = 0;
@@ -1124,8 +1118,7 @@ bool ln_db_annocnl_save(const ucoin_buf_t *pCnlAnno, uint64_t ShortChannelId, co
     }
 
     //channel_announcement
-    ucoin_buf_t buf_ann;
-    ucoin_buf_init(&buf_ann);
+    ucoin_buf_t buf_ann = UCOIN_BUF_INIT;
     retval = annocnl_load(&db, &buf_ann, ShortChannelId);
     if (retval != 0) {
         retval = annocnl_save(&db, pCnlAnno, ShortChannelId);
@@ -1199,12 +1192,11 @@ bool ln_db_annocnlupd_save(const ucoin_buf_t *pCnlUpd, const ln_cnl_update_t *pU
         goto LABEL_EXIT;
     }
 
-    ucoin_buf_t     buf_upd;
+    ucoin_buf_t     buf_upd = UCOIN_BUF_INIT;
     uint32_t        timestamp;
     bool            upddb = false;
     bool            clr = false;
 
-    ucoin_buf_init(&buf_upd);
     retval = annocnlupd_load(&db, &buf_upd, &timestamp, pUpd->short_channel_id, ln_cnlupd_direction(pUpd));
     if (retval == 0) {
         if (timestamp > pUpd->timestamp) {
@@ -1827,12 +1819,11 @@ bool ln_db_annonod_save(const ucoin_buf_t *pNodeAnno, const ln_node_announce_t *
         goto LABEL_EXIT;
     }
 
-    ucoin_buf_t buf_node;
+    ucoin_buf_t buf_node = UCOIN_BUF_INIT;
     uint32_t    timestamp;
     bool        upddb = false;
     bool        clr = false;
 
-    ucoin_buf_init(&buf_node);
     retval = annonod_load(&db, &buf_node, &timestamp, pAnno->p_node_id);
     if (retval == 0) {
         if (timestamp > pAnno->timestamp) {
@@ -2390,10 +2381,9 @@ bool ln_db_revtx_save(const ln_self_t *self, bool bUpdate, void *pDbParam)
     MDB_val key, data;
     ln_lmdb_db_t   db;
     char        dbname[M_SZ_DBNAME_LEN + 1];
-    ucoin_buf_t buf;
+    ucoin_buf_t buf = UCOIN_BUF_INIT;
     ucoin_push_t push;
 
-    ucoin_buf_init(&buf);
     db.txn = ((ln_lmdb_db_t *)pDbParam)->txn;
 
     misc_bin2str(dbname + M_PREFIX_LEN, self->channel_id, LN_SZ_CHANNEL_ID);
@@ -2703,14 +2693,6 @@ void HIDDEN ln_db_copy_channel(ln_self_t *pOutSelf, const ln_self_t *pInSelf)
 
     // add_htlc
     memcpy(pOutSelf->cnl_add_htlc,  pInSelf->cnl_add_htlc, M_SIZE(ln_self_t, cnl_add_htlc));
-    for (int idx = 0; idx < LN_HTLC_MAX; idx++) {
-        pOutSelf->cnl_add_htlc[idx].p_channel_id = NULL;
-        pOutSelf->cnl_add_htlc[idx].p_onion_route = NULL;
-
-        //shared_secret(shallow copy)
-        ucoin_buf_free(&pOutSelf->cnl_add_htlc[idx].shared_secret);
-        memcpy(&pOutSelf->cnl_add_htlc[idx].shared_secret, &pInSelf->cnl_add_htlc[idx].shared_secret, sizeof(ucoin_buf_t));
-    }
 
 
     //復元データ
@@ -2786,10 +2768,11 @@ static int self_addhtlc_load(ln_self_t *self, ln_lmdb_db_t *pDb)
         key.mv_size = M_SZ_SHAREDSECRET;
         key.mv_data = M_KEY_SHAREDSECRET;
         retval = mdb_get(pDb->txn, dbi, &key, &data);
-        if (retval != 0) {
+        if (retval == 0) {
+            ucoin_buf_alloccopy(&self->cnl_add_htlc[lp].shared_secret, data.mv_data, data.mv_size);
+        } else {
             DBG_PRINTF("ERR: %s(shared_secret)\n", mdb_strerror(retval));
         }
-        ucoin_buf_alloccopy(&self->cnl_add_htlc[lp].shared_secret, data.mv_data, data.mv_size);
         mdb_dbi_close(mpDbSelf, dbi);
     }
 
@@ -2865,8 +2848,7 @@ static int self_save(const ln_self_t *self, ln_lmdb_db_t *pDb)
     }
 
     //可変サイズ
-    ucoin_buf_t buf_funding;
-    ucoin_buf_init(&buf_funding);
+    ucoin_buf_t buf_funding = UCOIN_BUF_INIT;
     ucoin_tx_create(&buf_funding, &self->tx_funding);
     //
     backup_buf_t *p_dbscript_keys = (backup_buf_t *)M_MALLOC(sizeof(backup_buf_t) * M_SELF_BUFS);

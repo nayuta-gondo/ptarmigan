@@ -300,8 +300,8 @@ static bool funding_spent(ln_self_t *self, uint32_t confm, void *p_db_param)
     const ucoin_buf_t *p_vout = ln_revoked_vout(self);
     if (p_vout == NULL) {
         //展開されているのが最新のcommit_txか
-        ucoin_tx_t tx_commit;
-        ucoin_tx_init(&tx_commit);
+        ucoin_tx_t tx_commit = UCOIN_TX_INIT;
+
         if (btcprc_getraw_tx(&tx_commit, ln_commit_local(self)->txid)) {
             //最新のlocal commit_tx --> unilateral close(local)
             del = monitor_close_unilateral_local(self, p_db_param);
@@ -387,8 +387,7 @@ static bool close_unilateral_local_offered(ln_self_t *self, bool *pDel, bool spe
         if (p_htlc->prev_short_channel_id != 0) {
             //転送元がある場合、preimageを抽出する
             DBG_PRINTF("prev_short_channel_id=%" PRIx64 "(vout=%d)\n", p_htlc->prev_short_channel_id, pCloseDat->p_htlc_idx[lp]);
-            ucoin_tx_t tx;
-            ucoin_tx_init(&tx);
+            ucoin_tx_t tx = UCOIN_TX_INIT;
             uint32_t confm = btcprc_get_confirmation(ln_funding_txid(self));
             uint8_t txid[UCOIN_SZ_TXID];
             ucoin_tx_txid(txid, &pCloseDat->p_tx[LN_CLOSE_IDX_COMMIT]);
@@ -397,7 +396,7 @@ static bool close_unilateral_local_offered(ln_self_t *self, bool *pDel, bool spe
                 //preimageを登録(自分が持っているのと同じ状態にする)
                 const ucoin_buf_t *p_buf = ln_preimage_remote(&tx);
                 if (p_buf != NULL) {
-                    DBG_PRINTF("backward preimage: ");
+                    DBG_PRINTF("backwind preimage: ");
                     DUMPBIN(p_buf->buf, p_buf->len);
                     ln_db_preimg_save(p_buf->buf, 0, pDbParam);
                 } else {
@@ -569,8 +568,8 @@ static bool close_unilateral_remote_received(ln_self_t *self, bool *pDel, bool s
         if (p_htlc->prev_short_channel_id != 0) {
             //転送元がある場合、preimageを抽出する
             DBG_PRINTF("prev_short_channel_id=%" PRIx64 "(vout=%d)\n", p_htlc->prev_short_channel_id, pCloseDat->p_htlc_idx[lp]);
-            ucoin_tx_t tx;
-            ucoin_tx_init(&tx);
+            ucoin_tx_t tx = UCOIN_TX_INIT;
+
             uint32_t confm = btcprc_get_confirmation(ln_funding_txid(self));
             uint8_t txid[UCOIN_SZ_TXID];
             ucoin_tx_txid(txid, &pCloseDat->p_tx[LN_CLOSE_IDX_COMMIT]);
@@ -579,7 +578,7 @@ static bool close_unilateral_remote_received(ln_self_t *self, bool *pDel, bool s
                 //preimageを登録(自分が持っているのと同じ状態にする)
                 const ucoin_buf_t *p_buf = ln_preimage_remote(&tx);
                 if (p_buf != NULL) {
-                    DBG_PRINTF("backward preimage: ");
+                    DBG_PRINTF("backwind preimage: ");
                     DUMPBIN(p_buf->buf, p_buf->len);
                     ln_db_preimg_save(p_buf->buf, 0, pDbParam);
                 } else {
@@ -606,9 +605,8 @@ static bool close_others(ln_self_t *self, uint32_t confm, void *pDbParam)
 {
     (void)pDbParam;
     bool del = false;
+    ucoin_tx_t tx = UCOIN_TX_INIT;
 
-    ucoin_tx_t tx;
-    ucoin_tx_init(&tx);
     bool ret = search_spent_tx(&tx, confm, ln_funding_txid(self), ln_funding_txindex(self));
     if (ret) {
         DBG_PRINTF("find!\n");
@@ -622,7 +620,7 @@ static bool close_others(ln_self_t *self, uint32_t confm, void *pDbParam)
             del = true;
         } else {
             //相手にrevoked transaction closeされた
-            SYSLOG_WARN("closed: ugly way\n");
+            DBG_PRINTF("closed: ugly way\n");
             ret = ln_close_ugly(self, &tx, pDbParam);
             if (ret) {
                 if (ln_revoked_cnt(self) > 0) {
@@ -664,10 +662,10 @@ static bool close_revoked_first(ln_self_t *self, ucoin_tx_t *pTx, uint32_t confm
     for (uint32_t lp = 0; lp < pTx->vout_cnt; lp++) {
         const ucoin_buf_t *p_vout = ln_revoked_vout(self);
 
-        DBG_PRINTF("vout[%d]=", lp);
+        DBG_PRINTF("vout[%u]=", lp);
         DUMPBIN(pTx->vout[lp].script.buf, pTx->vout[lp].script.len);
         if (ucoin_buf_cmp(&pTx->vout[lp].script, &p_vout[LN_RCLOSE_IDX_TOLOCAL])) {
-            DBG_PRINTF("[%d]to_local !\n", lp);
+            DBG_PRINTF("[%u]to_local !\n", lp);
 
             ret = close_revoked_tolocal(self, pTx, lp);
             if (ret) {
@@ -677,7 +675,7 @@ static bool close_revoked_first(ln_self_t *self, ucoin_tx_t *pTx, uint32_t confm
                 save = false;
             }
         } else if (ucoin_buf_cmp(&pTx->vout[lp].script, &p_vout[LN_RCLOSE_IDX_TOREMOTE])) {
-            DBG_PRINTF("[%d]to_remote !\n", lp);
+            DBG_PRINTF("[%u]to_remote !\n", lp);
             ret = close_revoked_toremote(self, pTx, lp);
             if (ret) {
                 save = true;
@@ -687,7 +685,7 @@ static bool close_revoked_first(ln_self_t *self, ucoin_tx_t *pTx, uint32_t confm
                 DBG_PRINTF("p_vout[%d]=", lp2);
                 DUMPBIN(p_vout[lp2].buf, p_vout[lp2].len);
                 if (ucoin_buf_cmp(&pTx->vout[lp].script, &p_vout[lp2])) {
-                    DBG_PRINTF("[%d]HTLC vout[%d] !\n", lp, lp2);
+                    DBG_PRINTF("[%d]HTLC vout[%u] !\n", lp, lp2);
 
                     ret = close_revoked_htlc(self, pTx, lp, lp2);
                     if (ret) {
@@ -768,11 +766,10 @@ static bool close_revoked_after(ln_self_t *self, uint32_t confm, void *pDbParam)
 //revoked to_local output/HTLC Timeout/Success Txを取り戻す
 static bool close_revoked_tolocal(const ln_self_t *self, const ucoin_tx_t *pTx, int VIndex)
 {
+    ucoin_tx_t tx = UCOIN_TX_INIT;
     uint8_t txid[UCOIN_SZ_TXID];
     ucoin_tx_txid(txid, pTx);
 
-    ucoin_tx_t tx;
-    ucoin_tx_init(&tx);
     const ucoin_buf_t *p_wit = ln_revoked_wit(self);
 
     bool ret = ln_create_tolocal_spent(self, &tx, pTx->vout[VIndex].value,
@@ -795,11 +792,9 @@ static bool close_revoked_tolocal(const ln_self_t *self, const ucoin_tx_t *pTx, 
 //  to_remoteはP2WPKHで支払い済みだが、bitcoindがremotekeyを知らないため、転送する
 static bool close_revoked_toremote(const ln_self_t *self, const ucoin_tx_t *pTx, int VIndex)
 {
+    ucoin_tx_t tx = UCOIN_TX_INIT;
     uint8_t txid[UCOIN_SZ_TXID];
     ucoin_tx_txid(txid, pTx);
-
-    ucoin_tx_t tx;
-    ucoin_tx_init(&tx);
 
     bool ret = ln_create_toremote_spent(self, &tx, pTx->vout[VIndex].value, txid, VIndex);
     if (ret) {
@@ -818,11 +813,9 @@ static bool close_revoked_toremote(const ln_self_t *self, const ucoin_tx_t *pTx,
 //Offered/Recieved HTLCを取り戻す
 static bool close_revoked_htlc(const ln_self_t *self, const ucoin_tx_t *pTx, int VIndex, int WitIndex)
 {
+    ucoin_tx_t tx = UCOIN_TX_INIT;
     uint8_t txid[UCOIN_SZ_TXID];
     ucoin_tx_txid(txid, pTx);
-
-    ucoin_tx_t tx;
-    ucoin_tx_init(&tx);
 
     ln_create_revokedhtlc_spent(self, &tx, pTx->vout[VIndex].value, WitIndex, txid, VIndex);
     ucoin_print_tx(&tx);

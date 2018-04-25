@@ -169,6 +169,26 @@ typedef enum {
 } daemoncmd_t;
 
 
+/** @enum   trans_cmd_t
+ *  @brief  時間差処理要求
+ *  @note
+ *      - 要求が発生するタイミングと実行するタイミングをずらす場合に使用する。
+ *      - 主に、BOLTメッセージ受信(update_add/fulfill/fail_htlc)を別チャネルに転送するために用いる。
+ */
+typedef enum {
+    //外部用
+    TRANSCMD_NONE,                  ///< 要求無し
+
+    TRANSCMD_ADDHTLC,               ///< update_add_htlc転送
+    TRANSCMD_FULFILL,               ///< update_fulfill_htlc転送
+    TRANSCMD_FAIL,                  ///< update_fail_htlc転送
+    TRANSCMD_PAYRETRY,              ///< 支払いのリトライ
+
+    //内部用
+    TRANSCMD_ANNOSIGNS,             ///< announcement_signatures送信要求
+} trans_cmd_t;
+
+
 typedef struct {
     //peer
     char        ipaddr[16];
@@ -205,7 +225,7 @@ typedef struct {
 typedef struct {
     char            ipaddr[16];
     uint16_t        port;
-    char            name[32];
+    char            name[LN_SZ_ALIAS + 1];
     uint8_t         node_id[UCOIN_SZ_PUBKEY];
 } peer_conf_t;
 
@@ -229,16 +249,44 @@ typedef struct {
 } establish_conf_t;
 
 
+/** @struct fwd_proc_add_t
+ *  @brief  add_htlc転送データ
+ *  @note
+ *      - 転送元情報は、fulfill_htlc/fail_htlcの戻し用に self->cnl_add_htlc[]に保持する
+ */
 typedef struct {
-    uint8_t     onion_route[LN_SZ_ONION_ROUTE];
-    uint64_t    amt_to_forward;
-    uint32_t    outgoing_cltv_value;
-    uint8_t     payment_hash[LN_SZ_HASH];
-    uint64_t    next_short_channel_id;
-    uint64_t    prev_short_channel_id;
-    uint64_t    prev_id;
-    ucoin_buf_t shared_secret;
+    uint8_t     onion_route[LN_SZ_ONION_ROUTE];     ///< 送信:onion
+    uint64_t    amt_to_forward;                     ///< 送信:amt_to_forward
+    uint32_t    outgoing_cltv_value;                ///< 送信:cltv
+    uint8_t     payment_hash[LN_SZ_HASH];           ///< 送信:payment_hash
+    uint64_t    next_short_channel_id;              ///< 送信:short_chennl_id
+    uint64_t    prev_short_channel_id;              ///< 転送元:short_channel_id
+    uint64_t    prev_id;                            ///< 転送元:HTLC id
+    ucoin_buf_t shared_secret;                      ///< add_htlc失敗:reason用
+    ucoin_buf_t reason;                             ///< add_htlc失敗:reason
 } fwd_proc_add_t;
+
+
+/** @struct bwd_proc_fulfill_t
+ *  @brief  fulfill_htlc巻き戻しデータ
+ */
+typedef struct {
+    uint64_t    id;
+    uint64_t    prev_short_channel_id;
+    uint8_t     preimage[LN_SZ_PREIMAGE];
+} bwd_proc_fulfill_t;
+
+
+/** @struct bwd_proc_fail_t
+ *  @brief  fail_htlc巻き戻しデータ
+ */
+typedef struct {
+    uint64_t    id;
+    uint64_t    prev_short_channel_id;
+    ucoin_buf_t reason;
+    ucoin_buf_t shared_secret;
+    bool        b_first;            ///< true:fail発生元
+} bwd_proc_fail_t;
 
 
 struct lnapp_conf_t;
@@ -249,9 +297,7 @@ typedef struct lnapp_conf_t lnapp_conf_t;
  * prototypes
  ********************************************************************/
 
-bool ucoind_forward_payment(fwd_proc_add_t *p_add);
-bool ucoind_backward_fulfill(const ln_cb_fulfill_htlc_recv_t *p_fulfill);
-bool ucoind_backward_fail(const ln_cb_fail_htlc_recv_t *pFail);
+bool ucoind_transfer_channel(uint64_t ShortChannelId, trans_cmd_t Cmd, ucoin_buf_t *pBuf);
 
 void ucoind_preimage_lock(void);
 void ucoind_preimage_unlock(void);

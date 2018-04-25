@@ -244,6 +244,7 @@ int main(int argc, char *argv[])
 
     SYSLOG_INFO("end");
 
+    lnapp_term();
     btcprc_term();
     ln_db_term();
 
@@ -268,63 +269,22 @@ LABEL_EXIT:
  * public functions
  ********************************************************************/
 
-bool ucoind_forward_payment(fwd_proc_add_t *p_add)
+bool ucoind_transfer_channel(uint64_t ShortChannelId, trans_cmd_t Cmd, ucoin_buf_t *pBuf)
 {
-    bool ret = false;
-    lnapp_conf_t *p_appconf;
+    lnapp_conf_t *p_appconf = NULL;
 
-    DBG_PRINTF("  search short_channel_id : %" PRIx64 "\n", p_add->next_short_channel_id);
+    DBG_PRINTF("  search short_channel_id : %" PRIx64 "\n", ShortChannelId);
 
     //socketが開いているか検索
-    p_appconf = ucoind_search_connected_cnl(p_add->next_short_channel_id);
+    p_appconf = ucoind_search_connected_cnl(ShortChannelId);
     if (p_appconf != NULL) {
         DBG_PRINTF("AppConf found\n");
-        ret = lnapp_forward_payment(p_appconf, p_add);
+        lnapp_transfer_channel(p_appconf, Cmd, pBuf);
     } else {
         DBG_PRINTF("AppConf not found...\n");
     }
 
-    return ret;
-}
-
-
-bool ucoind_backward_fulfill(const ln_cb_fulfill_htlc_recv_t *pFulFill)
-{
-    bool ret = false;
-    lnapp_conf_t *p_appconf;
-
-    DBG_PRINTF("  search short_channel_id : %" PRIx64 "\n", pFulFill->prev_short_channel_id);
-
-    //socketが開いているか検索
-    p_appconf = ucoind_search_connected_cnl(pFulFill->prev_short_channel_id);
-    if (p_appconf != NULL) {
-        DBG_PRINTF("AppConf found\n");
-        ret = lnapp_backward_fulfill(p_appconf, pFulFill);
-    } else {
-        DBG_PRINTF("AppConf not found...\n");
-    }
-
-    return ret;
-}
-
-
-bool ucoind_backward_fail(const ln_cb_fail_htlc_recv_t *pFail)
-{
-    bool ret = false;
-    lnapp_conf_t *p_appconf;
-
-    DBG_PRINTF("  search short_channel_id : %" PRIx64 "\n", pFail->prev_short_channel_id);
-
-    //socketが開いているか検索
-    p_appconf = ucoind_search_connected_cnl(pFail->prev_short_channel_id);
-    if (p_appconf != NULL) {
-        DBG_PRINTF("AppConf found\n");
-        ret = lnapp_backward_fail(p_appconf, pFail, false);
-    } else {
-        DBG_PRINTF("AppConf not found...\n");
-    }
-
-    return ret;
+    return p_appconf != NULL;
 }
 
 

@@ -187,7 +187,7 @@ typedef enum {
     LN_CB_FAIL_HTLC_RECV,       ///< update_fail_htlc受信通知
     LN_CB_COMMIT_SIG_RECV_PREV, ///< commitment_signed処理前通知
     LN_CB_COMMIT_SIG_RECV,      ///< commitment_signed受信通知
-    LN_CB_HTLC_CHANGED,         ///< HTLC変化通知
+    LN_CB_REV_AND_ACK_RECV,     ///< revoke_and_ack受信通知
     LN_CB_SHUTDOWN_RECV,        ///< shutdown受信通知
     LN_CB_CLOSED_FEE,           ///< closing_signed受信通知(FEE不一致)
     LN_CB_CLOSED,               ///< closing_signed受信通知(FEE一致)
@@ -199,8 +199,10 @@ typedef enum {
 
 /** @typedef    ln_callback_t
  *  @brief      通知コールバック関数
+ *  @note
+ *      - p_paramで渡すデータを上位層で保持しておきたい場合、コピーを取ること
  */
-typedef void (*ln_callback_t)(ln_self_t*, ln_cb_t, void *);
+typedef void (*ln_callback_t)(ln_self_t *self, ln_cb_t type, void *p_param);
 
 
 /**************************************************************************
@@ -743,18 +745,29 @@ typedef struct {
 } ln_cb_funding_t;
 
 
+/** @struct ln_cb_add_htlc_recv_prev_t
+ *  @brief  update_add_htlc受信前処理(#LN_CB_ADD_HTLC_RECV_PREV)
+ */
+typedef struct {
+    uint64_t                next_short_channel_id;
+    const ln_self_t         *p_next_self;
+} ln_cb_add_htlc_recv_prev_t;
+
+
 /** @struct ln_cb_add_htlc_recv_t
  *  @brief  update_add_htlc受信通知(#LN_CB_ADD_HTLC_RECV)
  */
 typedef struct {
     bool                        ok;                     ///< true:アプリ層処理OK
     uint64_t                    id;                     ///< HTLC id
-    const uint8_t               *p_payment_hash;        ///< self->cnl_add_htlc[idx].payment_sha256
+    const uint8_t               *p_payment;             ///< payment_hash or preimage
+                                                        //      (hop_dataout.b_exit==true) ? preimage : payment_hash
     const ln_hop_dataout_t      *p_hop;                 ///< onion解析結果
     uint64_t                    amount_msat;            ///< self->cnl_add_htlc[idx].amount_msat
     uint32_t                    cltv_expiry;            ///< self->cnl_add_htlc[idx].cltv_expiry
     uint8_t                     *p_onion_route;         ///< 変換後onionパケット(self->cnl_add_htlc[idx].p_onion_route)
     const ucoin_buf_t           *p_shared_secret;       ///< onion shared secret
+    ucoin_buf_t                 reason;                 ///< fail reason
 } ln_cb_add_htlc_recv_t;
 
 
@@ -779,24 +792,6 @@ typedef struct {
     uint64_t                orig_id;                ///< 元のHTLC id
     const uint8_t           *p_payment_hash;        ///< payment_hash
 } ln_cb_fail_htlc_recv_t;
-
-
-///** @struct ln_cb_commsig_recv_t
-// *  @brief  commitment_signed受信通知(#LN_CB_COMMIT_SIG_RECV)
-// *  @todo
-// *      - アプリ側も似たような情報を持っているので、まとめたいが方法が見つかっていない
-// */
-//typedef struct {
-//    bool                    unlocked;               ///< true:送金処理完了
-//} ln_cb_commsig_recv_t;
-
-
-///** @struct ln_cb_htlc_changed_t
-// *  @brief  revoke_and_ack受信通知(#LN_CB_HTLC_CHANGED)
-// */
-//typedef struct {
-//    bool                    unlocked;               ///< true:着金処理完了
-//} ln_cb_htlc_changed_t;
 
 
 /** @struct ln_cb_closed_fee_t
@@ -959,12 +954,12 @@ struct ln_self_t {
     ucoin_buf_t                 cnl_anno;                       ///< 自channel_announcement
 
     //msg:init
-    uint8_t                     init_flag;                      ///< INIT_FLAG_xxx
+    uint8_t                     init_flag;                      ///< initフラグ(M_INIT_FLAG_xxx)
     uint8_t                     lfeature_remote;                ///< initで取得したlocalfeature
 
     //msg:close
     ucoin_tx_t                  tx_closing;                     ///< closing_tx
-    uint8_t                     shutdown_flag;                  ///< shutdownフラグ(M_SHDN_FLAG_xxx)。 b1:受信済み b0:送信済み
+    uint8_t                     shutdown_flag;                  ///< shutdownフラグ(M_SHDN_FLAG_xxx)
     uint64_t                    close_fee_sat;                  ///< closing_txのFEE
     uint64_t                    close_last_fee_sat;             ///< 最後に送信したclosing_txのFEE
     ucoin_buf_t                 shutdown_scriptpk_local;        ///< close時の送金先(local)
@@ -985,6 +980,8 @@ struct ln_self_t {
     uint8_t                     channel_id[LN_SZ_CHANNEL_ID];   ///< channel_id
     uint64_t                    short_channel_id;               ///< short_channel_id
     ln_update_add_htlc_t        cnl_add_htlc[LN_HTLC_MAX];      ///< 追加したHTLC
+    uint8_t                     comsig_flag;                    ///< commitment_signedフラグ(M_COMSIG_FLAG_xxx)
+    uint8_t                     revack_flag;                    ///< revoke_and_ackフラグ(M_REVACK_FLAG_xxx)
 
     //ping pong
     uint16_t                    missing_pong_cnt;               ///< ping送信に対してpongを受信しなかった回数
@@ -1346,6 +1343,7 @@ bool ln_close_ugly(ln_self_t *self, const ucoin_tx_t *pRevokedTx, void *pDbParam
  * @param[in,out]       self            channel情報
  * @param[out]          pAdd            生成したupdate_add_htlcメッセージ
  * @param[out]          pHtlcId         生成したHTLCのid
+ * @param[out]          pReason         (非NULLかつ戻り値がfalse)onion reason
  * @param[in]           pPacket         onion packet
  * @param[in]           amount_msat     送金額[msat]
  * @param[in]           cltv_value      CLTV値
@@ -1360,6 +1358,7 @@ bool ln_close_ugly(ln_self_t *self, const ucoin_tx_t *pRevokedTx, void *pDbParam
 bool ln_create_add_htlc(ln_self_t *self,
             ucoin_buf_t *pAdd,
             uint64_t *pHtlcId,
+            ucoin_buf_t *pReason,
             const uint8_t *pPacket,
             uint64_t amount_msat,
             uint32_t cltv_value,
@@ -1462,6 +1461,13 @@ bool ln_create_revokedhtlc_spent(const ln_self_t *self, ucoin_tx_t *pTx, uint64_
  * @param[in]       pPreImage           計算元(LN_SZ_PREIMAGE)
  */
 void ln_calc_preimage_hash(uint8_t *pHash, const uint8_t *pPreImage);
+
+
+/** set onion reaon: temporary node failure
+ * 
+ * @param[out]      pReason
+ */
+void ln_create_reason_temp_node(ucoin_buf_t *pReason);
 
 
 /********************************************************************
@@ -1732,7 +1738,7 @@ static inline const ln_update_add_htlc_t *ln_update_add_htlc(const ln_self_t *se
  * @param[in]   tx
  * @retval  非NULL      preimage
  * @retval  NULL        -
- * 
+ *
  * @note
  *      - Offered HTLC Outputsをredeemできたtx
  *          - https://github.com/lightningnetwork/lightning-rfc/blob/master/03-transactions.md#offered-htlc-outputs
@@ -1767,7 +1773,7 @@ static inline const ucoin_buf_t *ln_preimage_local(const ucoin_tx_t *pTx) {
  * @param[in]   tx
  * @retval  非NULL      preimage
  * @retval  NULL        -
- * 
+ *
  * @note
  *      - HTLC Success Tx時のUnlockになる
  *          - https://github.com/lightningnetwork/lightning-rfc/blob/master/03-transactions.md#offered-htlc-outputs
@@ -1906,7 +1912,7 @@ static inline uint64_t ln_forward_fee(const ln_self_t *self, uint64_t amount) {
 
 
 /** 最後に発生したエラー番号
- * 
+ *
  * @param[in]           self            channel情報
  * @return      エラー番号(ln_err.h)
  */
@@ -1916,7 +1922,7 @@ static inline int ln_err(const ln_self_t *self) {
 
 
 /** 最後に発生したエラー情報
- * 
+ *
  * @param[in]           self            channel情報
  * @return      エラー情報文字列
  */
@@ -1991,6 +1997,13 @@ bool ln_node_search_channel(ln_self_t *self, const uint8_t *pNodeId);
  * @retval      true        検索成功
  */
 bool ln_node_search_nodeanno(ln_node_announce_t *pNodeAnno, const uint8_t *pNodeId);
+
+
+/** nodeが所有しているour_msatの合計
+ * 
+ * @return  our_msatの合計[msatoshis]
+ */
+uint64_t ln_node_total_msat(void);
 
 
 /********************************************************************
