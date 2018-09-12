@@ -2,44 +2,49 @@
 
 ## NAME
 
-`ptarmd` - ptarm daemon
+`ptarmd` - Ptarmigan Lightning Daemon
 
 ## SYNOPSIS
 
 ```bash
-ptarmd [-p PORT] [-n ALIAS NAME] [-a IPv4 ADDRESS] [-c BITCOIN.CONF] [-i]
+ptarmd [options]
 ```
 
 ### options
 
-* -p PORT
-  * port number
-    * default: 9735(if DB don't have data)
-  * _NOTICE_: this value is witten to DB at first time
+* -?
+  * This help message
 
-* -n ALIAS_NAME
-  * node alias name
-    * default: `node_` + node_id first 6byte(if DB don't have data)
-  * _NOTICE_: this value is witten to DB at first time
+* -datadir=&lt;dir&gt;
+  * Specify data directory
 
-* -a IPv4_ADDRESS
-  * node announcement ip address
-    * default: no ip address(if DB don't have data)
-  * _NOTICE_: this value is witten to DB at first time
+* -port=&lt;port&gt;
+  * Listen for Lightning Network connections on TCP &lt;port&gt; (default: 9735, if DB does't have the data)
+  * _NOTICE_: This value is saved to DB for the first time
 
-* -c BITCOIN.CONF
-  * current bitcoin.conf
-    * default: ~/.bitcoin/bitcoin.conf
+* -externalip=&lt;ip&gt;
+  * Specify external IPv4 address (default: None, if DB does't have the data)
+  * _NOTICE_: This value is saved to DB for the first time
 
-* -x
-  * erase current DB(without node_id)(TEST)
+* -alias=&lt;name&gt;
+  * Specify alias &lt;name&gt; up to 32 bytes (default: "node_"+`node_id first 6bytes`, if DB does't have the data)
+  * _NOTICE_: This value is saved to DB for the first time
 
-* -N
-  * erase node_announcement DB(TEST)
+* -rpcport=&lt;port&gt;
+  * Listen for JSON-RPC connections on TCP &lt;port&gt; (default: &lt;LN port&gt;+1)
+
+* -bitcoin-conffile=&lt;file&gt;
+  * Specify bitcoind conf file (default: &lt;HOME&gt;/.bitcoin/bitcoin.conf)
+
+* -dev-removedb
+  * Remove current DB (without my `node_id`, for developers)
+
+* -dev-removenodeannodb
+  * Remove `node_announcement` DB (for developers)
 
 ## DESCRIPTION
 
-Start ptarm lightning daemon.
+Start Ptarmigan Lightning Daemon.
 
 ### related config file
 

@@ -24,27 +24,25 @@
  */
 #include <stdio.h>
 #include <pthread.h>
-#include <getopt.h>
 #include <signal.h>
 
 #include "btcrpc.h"
 #include "conf.h"
 #include "ln_db.h"
 #include "utl_log.h"
+#include "utl_opts.h"
 #include "utl_addr.h"
 
 
 /**************************************************************************
  * macros
  **************************************************************************/
-#define M_OPTSTRING     "p:n:a:c:d:xNh"
 
 
 /********************************************************************
  * prototypes
  ********************************************************************/
 
-static void reset_getopt();
 static void sig_set_catch_sigs(sigset_t *pSigSet);
 static void *sig_handler_start(void *pArg);
 
@@ -56,35 +54,34 @@ static void *sig_handler_start(void *pArg);
 int main(int argc, char *argv[])
 {
     bool bret;
-    rpc_conf_t rpc_conf;
-    ln_nodeaddr_t *p_addr;
-    char *p_alias;
-    int opt;
-    uint16_t my_rpcport = 0;
 
-    const struct option OPTIONS[] = {
-        { "rpcport", required_argument, NULL, 'P' },
-        { 0, 0, 0, 0 }
+    utl_opt_t opts[] = {
+        {"-?", NULL, NULL, "This help message", NULL, false},
+        {"-datadir", "dir", NULL, "Specify data directory", NULL, false},
+        {"-port", "port", NULL, "Listen for Lightning Network connections on TCP <port> (default: 9735)", NULL, false},
+        {"-externalip", "ip", NULL, "Specify external IPv4 address (default: None)", NULL, false},
+        {"-alias", "name", NULL, "Specify alias up to 32 bytes<name> (default: \"node_\"+`node_id first 6bytes`)", NULL, false},
+        {"-rpcport", "port", NULL, "Listen for JSON-RPC connections on TCP <port> (default: <LN port>+1)", NULL, false},
+        {"-bitcoin-conffile", "file", NULL, "Specify bitcoind conf file (default: <HOME>/.bitcoin/bitcoin.conf)", NULL, false},
+        {"-dev-removedb", NULL, NULL, "Remove current DB (without my `node_id`, for developers)", NULL, false},
+        {"-dev-removenodeannodb", NULL, NULL, "Remove `node_announcement` DB (for developers)", NULL, false},
+        {NULL, NULL, NULL, NULL, NULL, false}, //watchdog
     };
 
-    //`d` option is used to change working directory.
-    // It is done at the beginning of this process.
-    while ((opt = getopt_long(argc, argv, M_OPTSTRING, OPTIONS, NULL)) != -1) {
-        switch (opt) {
-        case 'd':
-            if (chdir(optarg) != 0) {
-                fprintf(stderr, "fail: change the working directory\n");
-                return -1;
-            }
-            break;
-        default:
-            break;
+    if (!utl_opts_parse(opts, argc, (const char ** const)argv)) goto LABEL_EXIT;
+
+    if (utl_opts_is_set(opts, "-?")) goto LABEL_EXIT;
+
+    if (utl_opts_is_set(opts, "-datadir")) {
+        //Change working directory.
+        // It is done at the beginning of this process.
+        const char* dir = utl_opts_get_string(opts, "-datadir");
+        if (!dir || chdir(dir) != 0) {
+            fprintf(stderr, "fail: change the working directory\n");
+            utl_opts_free(opts);
+            return -1;
         }
     }
-    reset_getopt();
-
-    p_addr = ln_node_addr();
-    p_alias = ln_node_alias();
 
 #ifdef ENABLE_PLOG_TO_STDOUT
     utl_log_init_stdout();
@@ -102,87 +99,72 @@ int main(int argc, char *argv[])
 #endif
     if (!bret) {
         fprintf(stderr, "fail: btc_init()\n");
+        utl_opts_free(opts);
         return -1;
     }
 
+    const char *param;
+
+    ln_nodeaddr_t *p_addr;
+    if (utl_opts_is_set(opts, "-port")) {
+        p_addr = ln_node_addr();
+        if (!utl_opts_get_u16(opts, &p_addr->port, "-port")) goto LABEL_EXIT;
+    }
+
+    if (utl_opts_is_set(opts, "-externalip")) {
+        param = utl_opts_get_string(opts, "-externalip");
+        if (!param) goto LABEL_EXIT;
+        p_addr = ln_node_addr();
+        p_addr->type = LN_NODEDESC_IPV4;
+        if (!utl_addr_ipv4_str2bin(p_addr->addrinfo.addr, param)) goto LABEL_EXIT;
+    }
+
+    if (utl_opts_is_set(opts, "-alias")) {
+        //node name(alias)
+        param = utl_opts_get_string(opts, "-alias");
+        if (!param) goto LABEL_EXIT;
+        if (strlen(param) > LN_SZ_ALIAS) goto LABEL_EXIT;
+        char *p_alias = ln_node_alias();
+        strncpy(p_alias, param, LN_SZ_ALIAS);
+        p_alias[LN_SZ_ALIAS] = '\0';
+    }
+
+    uint16_t rpcport = 0;
+    if (utl_opts_is_set(opts, "-rpcport")) {
+        if (!utl_opts_get_u16(opts, &rpcport, "-rpcport")) goto LABEL_EXIT;
+    }
+
+    //load btcconf file
+    rpc_conf_t rpc_conf;
     conf_btcrpc_init(&rpc_conf);
-    p_addr->type = LN_NODEDESC_NONE;
-    p_addr->port = 0;
-
-    int options = 0;
-    while ((opt = getopt_long(argc, argv, M_OPTSTRING, OPTIONS, NULL)) != -1) {
-        switch (opt) {
-        //case 'd':
-        //    //`d` option is used to change working directory.
-        //    // It is done at the beginning of this process.
-        //    break;
-        case 'p':
-            //port num
-            p_addr->port = (uint16_t)atoi(optarg);
-            break;
-        case 'n':
-            //node name(alias)
-            strncpy(p_alias, optarg, LN_SZ_ALIAS);
-            p_alias[LN_SZ_ALIAS] = '\0';
-            break;
-        case 'a':
-            //ip address
-            {
-                uint8_t ipbin[4];
-                bool addrret = utl_addr_ipv4_str2bin(ipbin, optarg);
-                if (addrret) {
-                    p_addr->type = LN_NODEDESC_IPV4;
-                    memcpy(p_addr->addrinfo.addr, ipbin, sizeof(ipbin));
-                }
-            }
-            break;
-        case 'c':
-            //load btcconf file
-            bret = conf_btcrpc_load(optarg, &rpc_conf);
-            if (!bret) {
-                goto LABEL_EXIT;
-            }
-            break;
-        case 'P':
-            //my rpcport num
-            my_rpcport = (uint16_t)atoi(optarg);
-            break;
-        case 'x':
-            //ノード情報を残してすべて削除
-            options |= 0x80;
-            break;
-        case 'N':
-            //node_announcementを全削除
-            options |= 0x40;
-            break;
-        case 'h':
-            //help
-            goto LABEL_EXIT;
-        default:
-            break;
-        }
+    if (utl_opts_is_set(opts, "-bitcoin-conffile")) {
+        param = utl_opts_get_string(opts, "-bitcoin-conffile");
+        if (!param) goto LABEL_EXIT;
+        if (!conf_btcrpc_load(param, &rpc_conf)) goto LABEL_EXIT;
     }
-
-    if (options & 0x40) {
-        bret = ln_db_annonod_drop_startup();
-        fprintf(stderr, "db_annonod_drop: %d\n", bret);
-        return 0;
-    }
-
-    if (options & 0x80) {
-        //
-        bret = ln_db_reset();
-        fprintf(stderr, "db_reset: %d\n", bret);
-        return 0;
-    }
-
     if ((strlen(rpc_conf.rpcuser) == 0) || (strlen(rpc_conf.rpcpasswd) == 0)) {
         //bitcoin.confから読込む
         bret = conf_btcrpc_load_default(&rpc_conf);
-        if (!bret) {
-            goto LABEL_EXIT;
-        }
+        if (!bret) goto LABEL_EXIT;
     }
+
+    if (utl_opts_is_set(opts, "-dev-removedb")) {
+        //ノード情報を残してすべて削除
+        bret = ln_db_reset();
+        fprintf(stderr, "db_reset: %d\n", bret);
+        utl_opts_free(opts);
+        return 0;
+    }
+
+    if (utl_opts_is_set(opts, "-dev-removenodeannodb")) {
+        //node_announcementを全削除
+        bret = ln_db_annonod_drop_startup();
+        fprintf(stderr, "db_annonod_drop: %d\n", bret);
+        utl_opts_free(opts);
+        return 0;
+    }
+
+    utl_opts_free(opts);
 
     //O'REILLY Japan: BINARY HACKS #52
     sigset_t ss;
@@ -205,7 +187,7 @@ int main(int argc, char *argv[])
         return -1;
     }
 
-    // https://github.com/lightningnetwork/lightning-rfc/issues/237
+    //https://github.com/lightningnetwork/lightning-rfc/issues/237
     for (int lp = 0; lp < LN_SZ_HASH / 2; lp++) {
         uint8_t tmp = genesis[lp];
         genesis[lp] = genesis[LN_SZ_HASH - lp - 1];
@@ -219,23 +201,29 @@ int main(int argc, char *argv[])
     LOGD("start bitcoin testnet/regtest\n");
 #endif
 
-    ptarmd_start(my_rpcport);
+    ptarmd_start(rpcport);
 
     return 0;
 
 LABEL_EXIT:
-    fprintf(stderr, "[usage]\n");
-    fprintf(stderr, "\t%s [-p PORT NUM] [-n ALIAS NAME] [-c BITCOIN.CONF] [-a IPv4 ADDRESS] [-i]\n", argv[0]);
+    fprintf(stderr, "Ptarmigan Lightning Daemon version vX.XX.X\n");
     fprintf(stderr, "\n");
-    fprintf(stderr, "\t\t-h : help\n");
-    fprintf(stderr, "\t\t-p PORT : node port(default: 9735)\n");
-    fprintf(stderr, "\t\t-n NAME : alias name(default: \"node_xxxxxxxxxxxx\")\n");
-    fprintf(stderr, "\t\t-c CONF_FILE : using bitcoin.conf(default: ~/.bitcoin/bitcoin.conf)\n");
-    fprintf(stderr, "\t\t-a IPADDRv4 : announce IPv4 address(default: none)\n");
-    fprintf(stderr, "\t\t-d DIR_PATH : change working directory\n");
-    fprintf(stderr, "\t\t--rpcport PORT : JSON-RPC port(default: node port+1)\n");
-    fprintf(stderr, "\t\t-x : erase current DB(without node_id)(TEST)\n");
-    fprintf(stderr, "\t\t-N : erase node_announcement DB(TEST)\n");
+    fprintf(stderr, "Usage:\n");
+    fprintf(stderr, "  ptarmd [options]                     Start Ptarmigan Lightning Daemon\n");
+    fprintf(stderr, "\n");
+
+    utl_str_t messages;
+    utl_str_init(&messages);
+    if (utl_opts_get_help_messages(opts, &messages)) {
+        fprintf(stderr, "Options:\n");
+        fprintf(stderr, "\n");
+        fprintf(stderr, "%s", utl_str_get(&messages));
+        utl_str_free(&messages);
+    } else {
+        fprintf(stderr, "fatal\n");
+    }
+
+    utl_opts_free(opts); //double free is permitted
     return -1;
 }
 
@@ -243,16 +231,6 @@ LABEL_EXIT:
 /********************************************************************
  * private functions
  ********************************************************************/
-
-static void reset_getopt()
-{
-    //optreset = 1;
-    //optind = 1;
-
-    //ref. http://man7.org/linux/man-pages/man3/getopt.3.html#NOTES
-    optind = 0;
-}
-
 
 //捕捉するsignal設定
 static void sig_set_catch_sigs(sigset_t *pSigSet)
