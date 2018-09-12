@@ -39,7 +39,7 @@ static utl_opt_t *find_opts(utl_opt_t *opts, const char *name);
  * public functions
  **************************************************************************/
 
-bool utl_opts_parse(utl_opt_t *opts, int argc, const char* const argv[])
+bool utl_opts_parse(utl_opt_t *opts, int argc, const char *const argv[])
 {
     //case1
     // argv[0]: program -- skip
