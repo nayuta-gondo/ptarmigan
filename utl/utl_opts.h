@@ -29,6 +29,8 @@
 #include <stdint.h>
 #include <stdbool.h>
 
+#include <utl_str.h>
+
 
 #ifdef __cplusplus
 extern "C" {
@@ -60,7 +62,7 @@ typedef struct {
  * prototypes
  **************************************************************************/
 
-bool utl_opts_parse(utl_opt_t *opts, int argc, const char* const argv[]);
+bool utl_opts_parse(utl_opt_t *opts, int argc, const char *const argv[]);
 
 void utl_opts_free(utl_opt_t *opts);
 
