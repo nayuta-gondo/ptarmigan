@@ -7,5 +7,5 @@
 for i in 3333 4444 5555 6666
 do
     rm -rf ./node_$i/dbptarm
-    ./ptarmd -d ./node_$i -c ../regtest.conf -p $i &
+    ./ptarmd -datadir=./node_$i -bitcoin-conffile=../regtest.conf -port=$i &
 done
