@@ -378,7 +378,7 @@ uint8_t HIDDEN gGenesisChainHash[LN_SZ_HASH];
 /// init.localfeaturesデフォルト値
 static uint8_t mInitLocalFeatures[1];
 
-static unsigned long mDebug;
+static uint32_t mDebug;
 
 
 /**************************************************************************
@@ -1729,7 +1729,7 @@ void ln_set_debug(unsigned long debug)
 /* [非公開]デバッグ用オプション取得
  *
  */
-unsigned long ln_get_debug(void)
+uint32_t ln_get_debug(void)
 {
     return mDebug;
 }

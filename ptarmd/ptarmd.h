@@ -151,7 +151,7 @@ typedef struct {
  */
 typedef struct {
     uint8_t         txid[BTC_SZ_TXID];
-    int             txindex;
+    uint32_t        txindex;
     uint64_t        funding_sat;
     uint64_t        push_sat;
     uint32_t        feerate_per_kw;
