@@ -37,7 +37,7 @@ static bool param_is_set(const utl_jsonrpc_param_t params[], const char *method,
  * public functions
  **************************************************************************/
 
-bool utl_jsonrpc_create_request(utl_str_t *body, const char *method, const char *paramv[], int paramc, const utl_jsonrpc_param_t non_string_params[])
+bool utl_jsonrpc_create_request(utl_str_t *body, const char *method, int paramc, const char *paramv[], const utl_jsonrpc_param_t *non_string_params)
 {
     bool ret = false;
     utl_str_init(body);
@@ -71,6 +71,7 @@ LABEL_EXIT:
  **************************************************************************/
 
 static bool param_is_set(const utl_jsonrpc_param_t params[], const char *method, int index) {
+    if (!params) return false;
     for (int i = 0; params[i].method; i++) {
         if (strcmp(params[i].method, method)) continue;
         if (params[i].index == index) return true;
