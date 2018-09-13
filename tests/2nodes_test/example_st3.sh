@@ -13,7 +13,8 @@ mv node_3333/ptarm_*.conf conf/peer3333.conf
 mv node_4444/ptarm_*.conf conf/peer4444.conf
 
 # connect
-./ptarmcli -c conf/peer3333.conf 4445
+. conf/peer3333.conf
+./ptarmcli -rpcport=4445 connectpeer $node_id $ipaddr $port
 
 sleep 5
 
