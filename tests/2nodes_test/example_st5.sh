@@ -6,7 +6,8 @@
 #
 # チャネルを閉じてもノードとして機能するため、ptarmdは起動したままになる。
 # DBからのチャネル情報削除は、gettxout によって funding_txが unspentではなくなったことを確認してから行っている。
-./ptarmcli -c conf/peer3333.conf -x 4445
+. conf/peer3333.conf
+./ptarmcli -rpcport=4445 closechannel $node_id
 
 # mining
 sleep 3

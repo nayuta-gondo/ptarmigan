@@ -33,12 +33,10 @@
  */
 void cmd_json_start(uint16_t Port);
 
-
 /** ptarmd JSON-RPC動作停止
  * 
  */
 void cmd_json_stop(void);
-
 
 /** ノード接続
  *
@@ -48,7 +46,6 @@ void cmd_json_stop(void);
  * @return  Linuxエラーコード
  */
 int cmd_json_connect(const uint8_t *pNodeId, const char *pIpAddr, uint16_t Port);
-
 
 /** 送金依頼
  *
@@ -64,5 +61,6 @@ int cmd_json_pay(const char *pInvoice, uint64_t AddAmountMsat);
  * @return  Linuxエラーコード
  */
 int cmd_json_pay_retry(const uint8_t *pPayHash);
+
 
 #endif  //CMD_JSON_H__

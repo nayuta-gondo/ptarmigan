@@ -115,8 +115,18 @@ int main(int argc, char *argv[])
     
     //create request
     utl_jsonrpc_param_t non_string_params[] = {
-        {"foo", 2},
-        {"foo", 3},
+        {"foo", 1}, //XXX
+        {"setfeerate", 0},
+        {"dev-debug", 0},
+        {"addinvoice", 0},
+        {"addinvoice", 1},
+        {"connectpeer", 2},
+        {"dev-disableautoconnect", 0},
+        {"openchannel", 1},
+        {"openchannel", 2},
+        {"openchannel", 3},
+        {"openchannel", 5},
+        {"closechannel", 1},
         {NULL, 0}, //watchdog
     };
     utl_str_t body;
