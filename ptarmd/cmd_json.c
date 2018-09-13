@@ -25,6 +25,8 @@
 //#include <stdio.h>
 #include <stddef.h>
 #include <inttypes.h>
+#include <stdint.h>
+#include <stdbool.h>
 //#include <stdlib.h>
 //#include <string.h>
 //#include <unistd.h>
@@ -42,7 +44,7 @@
 //#include "p2p_svr.h"
 //#include "p2p_cli.h"
 //#include "lnapp.h"
-//#include "monitoring.h"
+#include "monitoring.h"
 #include "ptarmd.h"
 
 
@@ -89,10 +91,11 @@ static struct jrpc_server   mJrpc;
  ********************************************************************/
 
 static cJSON *cmd_foo(jrpc_context *ctx, cJSON *params, cJSON *id);
+static cJSON *cmd_stop(jrpc_context *ctx, cJSON *params, cJSON *id);
+static cJSON *cmd_getinfo(jrpc_context *ctx, cJSON *params, cJSON *id);
+
 //static cJSON *cmd_connect(jrpc_context *ctx, cJSON *params, cJSON *id);
-//static cJSON *cmd_getinfo(jrpc_context *ctx, cJSON *params, cJSON *id);
 //static cJSON *cmd_disconnect(jrpc_context *ctx, cJSON *params, cJSON *id);
-//static cJSON *cmd_stop(jrpc_context *ctx, cJSON *params, cJSON *id);
 //static cJSON *cmd_fund(jrpc_context *ctx, cJSON *params, cJSON *id);
 //static cJSON *cmd_invoice(jrpc_context *ctx, cJSON *params, cJSON *id);
 //static cJSON *cmd_eraseinvoice(jrpc_context *ctx, cJSON *params, cJSON *id);
@@ -142,8 +145,10 @@ void cmd_json_start(uint16_t Port)
 {
     jrpc_server_init(&mJrpc, Port);
 
-    jrpc_register_procedure(&mJrpc, cmd_foo,    "foo",  NULL);
-    //
+    jrpc_register_procedure(&mJrpc, cmd_foo, "foo",  NULL);
+    jrpc_register_procedure(&mJrpc, cmd_stop, "stop",  NULL);
+    jrpc_register_procedure(&mJrpc, cmd_getinfo, "getinfo",  NULL);
+    //TODO
     
     jrpc_server_run(&mJrpc);
     jrpc_server_destroy(&mJrpc);
@@ -243,23 +248,16 @@ static cJSON *cmd_foo(jrpc_context *ctx, cJSON *params, cJSON *id)
     cJSON *json;
     int index = 0;
 
-    //parse request
-    //aaa
     json = cJSON_GetArrayItem(params, index++);
     if (!json) goto LABEL_EXIT;
     if (json->type != cJSON_String) goto LABEL_EXIT;
-    LOGD("aaa=%s\n", json->valuestring);
 
-    //bbb
     json = cJSON_GetArrayItem(params, index++);
     if (!json) goto LABEL_EXIT;
     if (json->type != cJSON_Number) goto LABEL_EXIT;
-    LOGD("bbb=%d\n", json->valueint);
 
-    //end
     if (cJSON_GetArrayItem(params, index++)) goto LABEL_EXIT;
 
-    //create response
     result = cJSON_CreateObject();
     cJSON_AddItemToObject(result, "AAA", cJSON_CreateString("AAA"));
     cJSON_AddItemToObject(result, "BBB", cJSON_CreateNumber(1234));
@@ -268,6 +266,85 @@ static cJSON *cmd_foo(jrpc_context *ctx, cJSON *params, cJSON *id)
 
 LABEL_EXIT:
     return jsonend(ctx, err, result);
+}
+
+static cJSON *cmd_stop(jrpc_context *ctx, cJSON *params, cJSON *id)
+{
+    jsonstart(ctx, params, id);
+
+    int err = RPCERR_PARSE;
+    cJSON *result = NULL;
+    //cJSON *json;
+    int index = 0;
+
+    if (cJSON_GetArrayItem(params, index++)) goto LABEL_EXIT;
+
+    monitor_disable_autoconn(true);
+    LOGD("stop\n");
+    ptarmd_stop();
+    jrpc_server_stop(&mJrpc);
+
+    err = 0;
+
+LABEL_EXIT:
+    return jsonend(ctx, err, result);
+}
+
+static cJSON *cmd_getinfo(jrpc_context *ctx, cJSON *params, cJSON *id)
+{
+    jsonstart(ctx, params, id);
+    //XXX
+
+#if 0
+    (void)ctx; (void)params; (void)id;
+
+    cJSON *result = cJSON_CreateObject();
+    cJSON *result_peer = cJSON_CreateArray();
+
+    uint64_t amount = ln_node_total_msat();
+
+    //basic info
+    char node_id[BTC_SZ_PUBKEY * 2 + 1];
+    utl_misc_bin2str(node_id, ln_node_getid(), BTC_SZ_PUBKEY);
+    cJSON_AddItemToObject(result, "node_id", cJSON_CreateString(node_id));
+    cJSON_AddItemToObject(result, "node_port", cJSON_CreateNumber(ln_node_addr()->port));
+    cJSON_AddNumber64ToObject(result, "total_our_msat", amount);
+
+#ifdef DEVELOPER_MODE
+    //blockcount
+    int32_t blockcnt = btcrpc_getblockcount();
+    if (blockcnt < 0) {
+        LOGD("fail btcrpc_getblockcount()\n");
+    } else {
+        cJSON_AddItemToObject(result, "block_count", cJSON_CreateNumber(blockcnt));
+    }
+#endif
+
+    //peer info
+    p2p_svr_show_self(result_peer);
+    p2p_cli_show_self(result_peer);
+    cJSON_AddItemToObject(result, "peers", result_peer);
+
+    //payment info
+    uint8_t *p_hash;
+    int cnt = ln_db_invoice_get(&p_hash);
+    if (cnt > 0) {
+        cJSON *result_hash = cJSON_CreateArray();
+        uint8_t *p = p_hash;
+        for (int lp = 0; lp < cnt; lp++) {
+            char hash_str[LN_SZ_HASH * 2 + 1];
+            utl_misc_bin2str(hash_str, p, LN_SZ_HASH);
+            p += LN_SZ_HASH;
+            cJSON_AddItemToArray(result_hash, cJSON_CreateString(hash_str));
+        }
+        free(p_hash);       //ln_lmdbでmalloc/realloc()している
+        cJSON_AddItemToObject(result, "paying_hash", result_hash);
+    }
+    cJSON_AddItemToObject(result, "last_errpay_date", cJSON_CreateString(mLastPayErr));
+
+    return result;
+#endif
+    return NULL;
 }
 
 /** 接続 : ptarmcli -c
