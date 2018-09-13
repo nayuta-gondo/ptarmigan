@@ -50,7 +50,7 @@ TEST_F(jsonrpc, create_request)
 
     utl_str_t body;
     utl_str_init(&body);
-    ASSERT_TRUE(utl_jsonrpc_create_request(&body, method, paramv, ARRAY_SIZE(paramv), non_string_params));
+    ASSERT_TRUE(utl_jsonrpc_create_request(&body, method, ARRAY_SIZE(paramv), paramv, non_string_params));
     const char *p = utl_str_get(&body);
     ASSERT_NE(p, NULL);
     ASSERT_STREQ(p, ""
