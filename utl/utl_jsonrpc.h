@@ -62,12 +62,12 @@ typedef struct {
  *
  * @param[in/out]   body                json-rpc request body
  * @param[in]       method              method
- * @param[in]       paramv              param values
  * @param[in]       paramc              param count
+ * @param[in]       paramv              param values
  * @param[in]       non_string_params   params of non-string(bool/number/etc.)
  * @retval          true                success
  */
-bool utl_jsonrpc_create_request(utl_str_t *body, const char *method, const char *paramv[], int paramc, const utl_jsonrpc_param_t *non_string_params);
+bool utl_jsonrpc_create_request(utl_str_t *body, const char *method, int paramc, const char *paramv[], const utl_jsonrpc_param_t *non_string_params);
 
 
 #ifdef __cplusplus
