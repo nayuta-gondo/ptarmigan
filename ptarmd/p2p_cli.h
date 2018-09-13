@@ -49,7 +49,7 @@ void p2p_cli_init(void);
 /** [p2p_cli]開始
  *
  */
-bool p2p_cli_start(const peer_conn_t *pConn, jrpc_context *ctx);
+bool p2p_cli_start(const peer_conn_t *pConn, int *err);
 
 
 /** [p2p_cli]全停止

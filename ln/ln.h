@@ -2507,7 +2507,7 @@ uint64_t ln_misc_get64be(const uint8_t *pData);
  ********************************************************************/
 
 void ln_set_debug(unsigned long debug);
-unsigned long ln_get_debug(void);
+uint32_t ln_get_debug(void);
 
 
 #ifdef PTARM_USE_PRINTFUNC
