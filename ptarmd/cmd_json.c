@@ -90,7 +90,7 @@ static struct jrpc_server   mJrpc;
  * prototypes
  ********************************************************************/
 
-static cJSON *cmd_foo(jrpc_context *ctx, cJSON *params, cJSON *id);
+static cJSON *req_foo(jrpc_context *ctx, cJSON *params, cJSON *id);
 static cJSON *cmd_stop(jrpc_context *ctx, cJSON *params, cJSON *id);
 static cJSON *cmd_getinfo(jrpc_context *ctx, cJSON *params, cJSON *id);
 
@@ -145,7 +145,7 @@ void cmd_json_start(uint16_t Port)
 {
     jrpc_server_init(&mJrpc, Port);
 
-    jrpc_register_procedure(&mJrpc, cmd_foo, "foo",  NULL);
+    jrpc_register_procedure(&mJrpc, req_foo, "foo",  NULL);
     jrpc_register_procedure(&mJrpc, cmd_stop, "stop",  NULL);
     jrpc_register_procedure(&mJrpc, cmd_getinfo, "getinfo",  NULL);
     //TODO
@@ -227,9 +227,9 @@ int cmd_json_pay_retry(const uint8_t *pPayHash) {
  * private functions : JSON-RPC
  ********************************************************************/
 
-#define jsonstart(ctx, params, id) (void)(ctx); (void)(params); (void)(id);
+#define json_start(ctx, params, id) (void)(ctx); (void)(params); (void)(id);
 
-static cJSON *jsonend(jrpc_context *ctx, int err, cJSON *result) {
+static cJSON *json_end(jrpc_context *ctx, int err, cJSON *result) {
     if (err == 0) {
         return result ? result : cJSON_CreateString("OK");
     } else {
@@ -239,38 +239,102 @@ static cJSON *jsonend(jrpc_context *ctx, int err, cJSON *result) {
     }
 }
 
-static cJSON *cmd_foo(jrpc_context *ctx, cJSON *params, cJSON *id)
+bool get_string(cJSON *params, int item, const char **s)
 {
-    jsonstart(ctx, params, id);
+    cJSON *json = cJSON_GetArrayItem(params, item);
+    if (!json) return false;
+    if (json->type != cJSON_String) return false;
+    *s = json->valuestring;
+    return true;
+}
+
+bool get_bool(cJSON *params, int item, bool *b)
+{
+    cJSON *json = cJSON_GetArrayItem(params, item);
+    if (!json) return false;
+    if (json->type == cJSON_True) {
+        *b = true;
+    } else if (json->type == cJSON_False) {
+        *b = false;
+    } else {
+        return false;
+    }
+    return true;
+}
+
+bool get_u16(cJSON *params, int item, uint16_t *u16)
+{
+    cJSON *json = cJSON_GetArrayItem(params, item);
+    if (!json) return false;
+    if (json->type != cJSON_Number) return false;
+    if (json->valueu64 > UINT16_MAX) return false;
+    *u16 = (uint16_t)json->valueu64;
+    return true;
+}
+
+bool get_u32(cJSON *params, int item, uint32_t *u32)
+{
+    cJSON *json = cJSON_GetArrayItem(params, item);
+    if (!json) return false;
+    if (json->type != cJSON_Number) return false;
+    if (json->valueu64 > UINT32_MAX) return false;
+    *u32 = (uint32_t)json->valueu64;
+    return true;
+}
+
+bool get_u64(cJSON *params, int item, uint32_t *u64)
+{
+    cJSON *json = cJSON_GetArrayItem(params, item);
+    if (!json) return false;
+    if (json->type != cJSON_Number) return false;
+    *u64 = json->valueu64;
+    return true;
+}
+
+bool is_end_of_params(cJSON *params, int item)
+{
+    if (cJSON_GetArrayItem(params, item)) return false;
+    return true;
+}
+
+
+static cJSON *res_foo(const char *aaa, uint32_t bbb, int *err)
+{
+    *err = 0;
+    LOGD("aaa=%s\n", aaa);
+    LOGD("bbb=%u\n", bbb);
+
+    cJSON *result = cJSON_CreateObject();
+    cJSON_AddItemToObject(result, "AAA", cJSON_CreateString("AAA"));
+    cJSON_AddItemToObject(result, "BBB", cJSON_CreateNumber(1234));
+    return result;
+}
+
+static cJSON *req_foo(jrpc_context *ctx, cJSON *params, cJSON *id)
+{
+    json_start(ctx, params, id);
 
     int err = RPCERR_PARSE;
     cJSON *result = NULL;
-    cJSON *json;
     int index = 0;
 
-    json = cJSON_GetArrayItem(params, index++);
-    if (!json) goto LABEL_EXIT;
-    if (json->type != cJSON_String) goto LABEL_EXIT;
+    const char *aaa;
+    uint32_t bbb;
 
-    json = cJSON_GetArrayItem(params, index++);
-    if (!json) goto LABEL_EXIT;
-    if (json->type != cJSON_Number) goto LABEL_EXIT;
+    if (!get_string(params, index++, &aaa)) goto LABEL_EXIT;
+    if (!get_u32(params, index++, &bbb)) goto LABEL_EXIT;
+    if (!is_end_of_params(params, index++)) goto LABEL_EXIT;
 
-    if (cJSON_GetArrayItem(params, index++)) goto LABEL_EXIT;
-
-    result = cJSON_CreateObject();
-    cJSON_AddItemToObject(result, "AAA", cJSON_CreateString("AAA"));
-    cJSON_AddItemToObject(result, "BBB", cJSON_CreateNumber(1234));
-
-    err = 0;
+    result = res_foo(aaa, bbb, &err);
+    if (!result) goto LABEL_EXIT;
 
 LABEL_EXIT:
-    return jsonend(ctx, err, result);
+    return json_end(ctx, err, result);
 }
 
 static cJSON *cmd_stop(jrpc_context *ctx, cJSON *params, cJSON *id)
 {
-    jsonstart(ctx, params, id);
+    json_start(ctx, params, id);
 
     int err = RPCERR_PARSE;
     cJSON *result = NULL;
@@ -287,12 +351,12 @@ static cJSON *cmd_stop(jrpc_context *ctx, cJSON *params, cJSON *id)
     err = 0;
 
 LABEL_EXIT:
-    return jsonend(ctx, err, result);
+    return json_end(ctx, err, result);
 }
 
 static cJSON *cmd_getinfo(jrpc_context *ctx, cJSON *params, cJSON *id)
 {
-    jsonstart(ctx, params, id);
+    json_start(ctx, params, id);
     //XXX
 
 #if 0
