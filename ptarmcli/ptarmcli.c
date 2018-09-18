@@ -117,6 +117,8 @@ int main(int argc, char *argv[])
         {"foo", 1}, //XXX
         {"setfeerate", 0},
         {"dev-debug", 0},
+        {"addinvoice", 0},
+        {"addinvoice", 1},
         {NULL, 0}, //watchdog
     };
     utl_str_t body;

@@ -96,11 +96,12 @@ static cJSON *cmd_getinfo(jrpc_context *ctx, cJSON *params, cJSON *id);
 static cJSON *cmd_setfeerate(jrpc_context *ctx, cJSON *params, cJSON *id);
 static cJSON *cmd_dev_debug(jrpc_context *ctx, cJSON *params, cJSON *id);
 static cJSON *cmd_addinvoice(jrpc_context *ctx, cJSON *params, cJSON *id);
+static cJSON *cmd_removeinvoice(jrpc_context *ctx, cJSON *params, cJSON *id);
+static cJSON *cmd_removeallinvoices(jrpc_context *ctx, cJSON *params, cJSON *id);
 
 //static cJSON *cmd_connect(jrpc_context *ctx, cJSON *params, cJSON *id);
 //static cJSON *cmd_disconnect(jrpc_context *ctx, cJSON *params, cJSON *id);
 //static cJSON *cmd_fund(jrpc_context *ctx, cJSON *params, cJSON *id);
-//static cJSON *cmd_eraseinvoice(jrpc_context *ctx, cJSON *params, cJSON *id);
 //static cJSON *cmd_listinvoice(jrpc_context *ctx, cJSON *params, cJSON *id);
 //static cJSON *cmd_pay(jrpc_context *ctx, cJSON *params, cJSON *id);
 //static cJSON *cmd_routepay_first(jrpc_context *ctx, cJSON *params, cJSON *id);
@@ -146,11 +147,13 @@ void cmd_json_start(uint16_t Port)
     jrpc_server_init(&mJrpc, Port);
 
     //jrpc_register_procedure(&mJrpc, cmd_foo,        "foo",  NULL);
-    jrpc_register_procedure(&mJrpc, cmd_stop,           "stop",  NULL);
-    jrpc_register_procedure(&mJrpc, cmd_getinfo,        "getinfo",  NULL);
-    jrpc_register_procedure(&mJrpc, cmd_setfeerate,     "setfeerate", NULL);
-    jrpc_register_procedure(&mJrpc, cmd_dev_debug,      "dev-debug", NULL);
-    jrpc_register_procedure(&mJrpc, cmd_addinvoice,     "addinvoice", NULL);
+    jrpc_register_procedure(&mJrpc, cmd_stop,               "stop",  NULL);
+    jrpc_register_procedure(&mJrpc, cmd_getinfo,            "getinfo",  NULL);
+    jrpc_register_procedure(&mJrpc, cmd_setfeerate,         "setfeerate", NULL);
+    jrpc_register_procedure(&mJrpc, cmd_dev_debug,          "dev-debug", NULL);
+    jrpc_register_procedure(&mJrpc, cmd_addinvoice,         "addinvoice", NULL);
+    jrpc_register_procedure(&mJrpc, cmd_removeinvoice,      "removeinvoice", NULL);
+    jrpc_register_procedure(&mJrpc, cmd_removeallinvoices,  "removeallinvoices", NULL);
     //TODO
 //    jrpc_register_procedure(&mJrpc, cmd_connect,     "connect", NULL);
 //    jrpc_register_procedure(&mJrpc, cmd_disconnect,  "disconnect", NULL);
@@ -614,6 +617,69 @@ LABEL_EXIT:
     return json_end(ctx, err, res);
 }
 
+static bool proc_removeinvoice(const char *preimage_hash, cJSON **res, int *err)
+{
+    *res = NULL;
+    *err = 0;
+
+    LOGD("erase hash: %s\n", preimage_hash);
+
+    uint8_t hash[LN_SZ_HASH];
+    utl_misc_str2bin(hash, sizeof(hash), preimage_hash);
+    if (!ln_db_preimg_del_hash(hash)) {
+        *err = RPCERR_INVOICE_ERASE;
+        return false;
+    }
+    return true;
+}
+
+static cJSON *cmd_removeinvoice(jrpc_context *ctx, cJSON *params, cJSON *id)
+{
+    json_start(ctx, params, id);
+
+    int err = RPCERR_PARSE;
+    cJSON *res = NULL;
+    int index = 0;
+
+    const char *preimage_hash;
+
+    if (!get_string(params, index++, &preimage_hash)) goto LABEL_EXIT;
+    if (!is_end_of_params(params, index++)) goto LABEL_EXIT;
+
+    if (!proc_removeinvoice(preimage_hash, &res, &err)) goto LABEL_EXIT;
+
+LABEL_EXIT:
+    return json_end(ctx, err, res);
+}
+
+static bool proc_removeallinvoices(cJSON **res, int *err)
+{
+    *res = NULL;
+    *err = 0;
+
+    if (!ln_db_preimg_del(NULL)) {
+        *err = RPCERR_INVOICE_ERASE;
+        return false;
+    }
+    return true;
+}
+
+static cJSON *cmd_removeallinvoices(jrpc_context *ctx, cJSON *params, cJSON *id)
+{
+    json_start(ctx, params, id);
+
+    int err = RPCERR_PARSE;
+    cJSON *res = NULL;
+    int index = 0;
+
+    if (!is_end_of_params(params, index++)) goto LABEL_EXIT;
+
+    if (!proc_removeallinvoices(&res, &err)) goto LABEL_EXIT;
+
+LABEL_EXIT:
+    return json_end(ctx, err, res);
+}
+
 /** 接続 : ptarmcli -c
  *
  */
@@ -832,49 +898,6 @@ LABEL_EXIT:
 //}
 
 
-/** invoice作成 : ptarmcli -i
- *
- */
-
-
-/** invice削除 : ptarmcli -e
- *
- */
-//static cJSON *cmd_eraseinvoice(jrpc_context *ctx, cJSON *params, cJSON *id)
-//{
-//    (void)id;
-//
-//    int err = RPCERR_PARSE;
-//    cJSON *json;
-//    cJSON *result = NULL;
-//    uint8_t preimage_hash[LN_SZ_HASH];
-//    int index = 0;
-//
-//    if (params == NULL) {
-//        goto LABEL_EXIT;
-//    }
-//
-//    json = cJSON_GetArrayItem(params, index++);
-//    if ((json == NULL) || (json->type != cJSON_String)) {
-//        goto LABEL_EXIT;
-//    }
-//    if (strlen(json->valuestring) > 0) {
-//        LOGD("erase hash: %s\n", json->valuestring);
-//        utl_misc_str2bin(preimage_hash, sizeof(preimage_hash), json->valuestring);
-//        err = cmd_eraseinvoice_proc(preimage_hash);
-//    } else {
-//        err = cmd_eraseinvoice_proc(NULL);
-//    }
-//
-//LABEL_EXIT:
-//    if (err == 0) {
-//        result = cJSON_CreateString(kOK);
-//    } else {
-//        ctx->error_code = err;
-//        ctx->error_message = ptarmd_error_str(err);
-//    }
-//    return result;
-//}
 
 
 /** invoice一覧出力 : ptarmcli -m
