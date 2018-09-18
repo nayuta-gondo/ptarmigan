@@ -297,10 +297,11 @@ bool is_end_of_params(cJSON *params, int item)
     return true;
 }
 
-
 static bool proc_foo(const char *aaa, uint32_t bbb, cJSON **res, int *err)
 {
+    *res = NULL;
     *err = 0;
+
     LOGD("aaa=%s\n", aaa);
     LOGD("bbb=%u\n", bbb);
 
@@ -331,26 +332,32 @@ LABEL_EXIT:
     return json_end(ctx, err, res);
 }
 
-static cJSON *cmd_stop(jrpc_context *ctx, cJSON *params, cJSON *id)
+static bool proc_stop(cJSON **res, int *err)
 {
-    json_start(ctx, params, id);
-
-    int err = RPCERR_PARSE;
-    cJSON *result = NULL;
-    //cJSON *json;
-    int index = 0;
-
-    if (cJSON_GetArrayItem(params, index++)) goto LABEL_EXIT;
+    *res = NULL;
+    *err = 0;
 
     monitor_disable_autoconn(true);
     LOGD("stop\n");
     ptarmd_stop();
     jrpc_server_stop(&mJrpc);
+    return true;
+}
 
-    err = 0;
+static cJSON *cmd_stop(jrpc_context *ctx, cJSON *params, cJSON *id)
+{
+    json_start(ctx, params, id);
+
+    int err = RPCERR_PARSE;
+    cJSON *res = NULL;
+    int index = 0;
+
+    if (!is_end_of_params(params, index++)) goto LABEL_EXIT;
+
+    if (!proc_stop(&res, &err)) goto LABEL_EXIT;
 
 LABEL_EXIT:
-    return json_end(ctx, err, result);
+    return json_end(ctx, err, res);
 }
 
 static cJSON *cmd_getinfo(jrpc_context *ctx, cJSON *params, cJSON *id)
