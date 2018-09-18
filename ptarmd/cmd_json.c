@@ -582,7 +582,7 @@ static bool proc_addinvoice(uint64_t amount, uint32_t min_final_cltv_expiry, cJS
     char str_hash[LN_SZ_HASH * 2 + 1];
     utl_misc_bin2str(str_hash, preimage_hash, LN_SZ_HASH);
     *res = cJSON_CreateObject();
-    cJSON_AddItemToObject(*res, "hash", cJSON_CreateString(str_hash));
+    cJSON_AddItemToObject(*res, "payment_hash", cJSON_CreateString(str_hash));
     cJSON_AddItemToObject(*res, "amount", cJSON_CreateNumber64(amount));
     cJSON_AddItemToObject(*res, "min_final_cltv_expiry", cJSON_CreateNumber64(min_final_cltv_expiry));
     cJSON_AddItemToObject(*res, "bolt11", cJSON_CreateString(p_invoice));
