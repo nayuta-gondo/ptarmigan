@@ -90,9 +90,10 @@ static char                 mLastPayErr[M_SZ_PAYERR];       //最後に送金エ
  * prototypes
  ********************************************************************/
 
-static cJSON *cmd_foo(jrpc_context *ctx, cJSON *params, cJSON *id);
+//static cJSON *cmd_foo(jrpc_context *ctx, cJSON *params, cJSON *id);
 static cJSON *cmd_stop(jrpc_context *ctx, cJSON *params, cJSON *id);
 static cJSON *cmd_getinfo(jrpc_context *ctx, cJSON *params, cJSON *id);
+static cJSON *cmd_setfeerate(jrpc_context *ctx, cJSON *params, cJSON *id);
 
 //static cJSON *cmd_connect(jrpc_context *ctx, cJSON *params, cJSON *id);
 //static cJSON *cmd_disconnect(jrpc_context *ctx, cJSON *params, cJSON *id);
@@ -109,7 +110,6 @@ static cJSON *cmd_getinfo(jrpc_context *ctx, cJSON *params, cJSON *id);
 //static cJSON *cmd_getcommittx(jrpc_context *ctx, cJSON *params, cJSON *id);
 //static cJSON *cmd_disautoconn(jrpc_context *ctx, cJSON *params, cJSON *id);
 //static cJSON *cmd_removechannel(jrpc_context *ctx, cJSON *params, cJSON *id);
-//static cJSON *cmd_setfeerate(jrpc_context *ctx, cJSON *params, cJSON *id);
 //
 //static int cmd_connect_proc(const peer_conn_t *pConn, jrpc_context *ctx);
 //static int cmd_disconnect_proc(const uint8_t *pNodeId);
@@ -145,10 +145,26 @@ void cmd_json_start(uint16_t Port)
 {
     jrpc_server_init(&mJrpc, Port);
 
-    jrpc_register_procedure(&mJrpc, cmd_foo, "foo",  NULL);
-    jrpc_register_procedure(&mJrpc, cmd_stop, "stop",  NULL);
-    jrpc_register_procedure(&mJrpc, cmd_getinfo, "getinfo",  NULL);
+    //jrpc_register_procedure(&mJrpc, cmd_foo,        "foo",  NULL);
+    jrpc_register_procedure(&mJrpc, cmd_stop,       "stop",  NULL);
+    jrpc_register_procedure(&mJrpc, cmd_getinfo,    "getinfo",  NULL);
+    jrpc_register_procedure(&mJrpc, cmd_setfeerate, "setfeerate", NULL);
     //TODO
+//    jrpc_register_procedure(&mJrpc, cmd_connect,     "connect", NULL);
+//    jrpc_register_procedure(&mJrpc, cmd_disconnect,  "disconnect", NULL);
+//    jrpc_register_procedure(&mJrpc, cmd_fund,        "fund", NULL);
+//    jrpc_register_procedure(&mJrpc, cmd_invoice,     "invoice", NULL);
+//    jrpc_register_procedure(&mJrpc, cmd_eraseinvoice,"eraseinvoice", NULL);
+//    jrpc_register_procedure(&mJrpc, cmd_listinvoice, "listinvoice", NULL);
+//    jrpc_register_procedure(&mJrpc, cmd_pay,         "PAY", NULL);
+//    jrpc_register_procedure(&mJrpc, cmd_routepay_first, "routepay", NULL);
+//    jrpc_register_procedure(&mJrpc, cmd_routepay,    "routepay_cont", NULL);
+//    jrpc_register_procedure(&mJrpc, cmd_close,       "close", NULL);
+//    jrpc_register_procedure(&mJrpc, cmd_getlasterror,"getlasterror", NULL);
+//    jrpc_register_procedure(&mJrpc, cmd_debug,       "debug", NULL);
+//    jrpc_register_procedure(&mJrpc, cmd_getcommittx, "getcommittx", NULL);
+//    jrpc_register_procedure(&mJrpc, cmd_disautoconn, "disautoconn", NULL);
+//    jrpc_register_procedure(&mJrpc, cmd_removechannel,"removechannel", NULL);
     
     jrpc_server_run(&mJrpc);
     jrpc_server_destroy(&mJrpc);
@@ -297,6 +313,7 @@ bool is_end_of_params(cJSON *params, int item)
     return true;
 }
 
+/*
 static bool proc_foo(const char *aaa, uint32_t bbb, cJSON **res, int *err)
 {
     *res = NULL;
@@ -331,6 +348,7 @@ static cJSON *cmd_foo(jrpc_context *ctx, cJSON *params, cJSON *id)
 LABEL_EXIT:
     return json_end(ctx, err, res);
 }
+*/
 
 static bool proc_stop(cJSON **res, int *err)
 {
@@ -424,6 +442,36 @@ static cJSON *cmd_getinfo(jrpc_context *ctx, cJSON *params, cJSON *id)
     if (!is_end_of_params(params, index++)) goto LABEL_EXIT;
 
     if (!proc_getinfo(&res, &err)) goto LABEL_EXIT;
+
+LABEL_EXIT:
+    return json_end(ctx, err, res);
+}
+
+static bool proc_setfeerate(uint32_t feerate_per_kw, cJSON **res, int *err)
+{
+    *res = NULL;
+    *err = 0;
+
+    LOGD("setfeerate\n");
+    LOGD("feerate_per_kw=%" PRIu32 "\n", feerate_per_kw);
+    monitor_set_feerate_per_kw(feerate_per_kw);
+    return true;
+}
+
+static cJSON *cmd_setfeerate(jrpc_context *ctx, cJSON *params, cJSON *id)
+{
+    json_start(ctx, params, id);
+
+    int err = RPCERR_PARSE;
+    cJSON *res = NULL;
+    int index = 0;
+
+    uint32_t feerate_per_kw;
+
+    if (!get_u32(params, index++, &feerate_per_kw)) goto LABEL_EXIT;
+    if (!is_end_of_params(params, index++)) goto LABEL_EXIT;
+
+    if (!proc_setfeerate(feerate_per_kw, &res, &err)) goto LABEL_EXIT;
 
 LABEL_EXIT:
     return json_end(ctx, err, res);
@@ -1300,41 +1348,6 @@ LABEL_EXIT:
 /** feerate_per_kw手動設定 : ptarmcli --setfeerate
  *
  */
-//static cJSON *cmd_setfeerate(jrpc_context *ctx, cJSON *params, cJSON *id)
-//{
-//    (void)id;
-//
-//    cJSON *json;
-//    uint32_t feerate_per_kw = 0;
-//    cJSON *result = NULL;
-//    int index = 0;
-//
-//    if (params == NULL) {
-//        index = -1;
-//        goto LABEL_EXIT;
-//    }
-//
-//    //feerate_per_kw
-//    json = cJSON_GetArrayItem(params, index++);
-//    if (json && (json->type == cJSON_Number) && (json->valueu64 <= UINT32_MAX)) {
-//        feerate_per_kw = (uint32_t)json->valueu64;
-//        LOGD("feerate_per_kw=%" PRIu32 "\n", feerate_per_kw);
-//    } else {
-//        index = -1;
-//        goto LABEL_EXIT;
-//    }
-//
-//    LOGD("setfeerate\n");
-//    monitor_set_feerate_per_kw(feerate_per_kw);
-//    result = cJSON_CreateString(kOK);
-//
-//LABEL_EXIT:
-//    if (index < 0) {
-//        ctx->error_code = RPCERR_PARSE;
-//        ctx->error_message = ptarmd_error_str(RPCERR_PARSE);
-//    }
-//    return result;
-//}
 
 
 /********************************************************************

@@ -114,7 +114,8 @@ int main(int argc, char *argv[])
     
     //create request
     utl_jsonrpc_param_t non_string_params[] = {
-        {"foo", 1},
+        {"foo", 1}, //XXX
+        {"setfeerate", 0},
         {NULL, 0}, //watchdog
     };
     utl_str_t body;
