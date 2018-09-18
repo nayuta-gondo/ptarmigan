@@ -116,6 +116,7 @@ int main(int argc, char *argv[])
     utl_jsonrpc_param_t non_string_params[] = {
         {"foo", 1}, //XXX
         {"setfeerate", 0},
+        {"dev-debug", 0},
         {NULL, 0}, //watchdog
     };
     utl_str_t body;

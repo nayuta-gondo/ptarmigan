@@ -94,6 +94,7 @@ static char                 mLastPayErr[M_SZ_PAYERR];       //最後に送金エ
 static cJSON *cmd_stop(jrpc_context *ctx, cJSON *params, cJSON *id);
 static cJSON *cmd_getinfo(jrpc_context *ctx, cJSON *params, cJSON *id);
 static cJSON *cmd_setfeerate(jrpc_context *ctx, cJSON *params, cJSON *id);
+static cJSON *cmd_dev_debug(jrpc_context *ctx, cJSON *params, cJSON *id);
 
 //static cJSON *cmd_connect(jrpc_context *ctx, cJSON *params, cJSON *id);
 //static cJSON *cmd_disconnect(jrpc_context *ctx, cJSON *params, cJSON *id);
@@ -106,7 +107,6 @@ static cJSON *cmd_setfeerate(jrpc_context *ctx, cJSON *params, cJSON *id);
 //static cJSON *cmd_routepay(jrpc_context *ctx, cJSON *params, cJSON *id);
 //static cJSON *cmd_close(jrpc_context *ctx, cJSON *params, cJSON *id);
 //static cJSON *cmd_getlasterror(jrpc_context *ctx, cJSON *params, cJSON *id);
-//static cJSON *cmd_debug(jrpc_context *ctx, cJSON *params, cJSON *id);
 //static cJSON *cmd_getcommittx(jrpc_context *ctx, cJSON *params, cJSON *id);
 //static cJSON *cmd_disautoconn(jrpc_context *ctx, cJSON *params, cJSON *id);
 //static cJSON *cmd_removechannel(jrpc_context *ctx, cJSON *params, cJSON *id);
@@ -146,9 +146,10 @@ void cmd_json_start(uint16_t Port)
     jrpc_server_init(&mJrpc, Port);
 
     //jrpc_register_procedure(&mJrpc, cmd_foo,        "foo",  NULL);
-    jrpc_register_procedure(&mJrpc, cmd_stop,       "stop",  NULL);
-    jrpc_register_procedure(&mJrpc, cmd_getinfo,    "getinfo",  NULL);
-    jrpc_register_procedure(&mJrpc, cmd_setfeerate, "setfeerate", NULL);
+    jrpc_register_procedure(&mJrpc, cmd_stop,           "stop",  NULL);
+    jrpc_register_procedure(&mJrpc, cmd_getinfo,        "getinfo",  NULL);
+    jrpc_register_procedure(&mJrpc, cmd_setfeerate,     "setfeerate", NULL);
+    jrpc_register_procedure(&mJrpc, cmd_dev_debug,      "dev-debug", NULL);
     //TODO
 //    jrpc_register_procedure(&mJrpc, cmd_connect,     "connect", NULL);
 //    jrpc_register_procedure(&mJrpc, cmd_disconnect,  "disconnect", NULL);
@@ -161,7 +162,6 @@ void cmd_json_start(uint16_t Port)
 //    jrpc_register_procedure(&mJrpc, cmd_routepay,    "routepay_cont", NULL);
 //    jrpc_register_procedure(&mJrpc, cmd_close,       "close", NULL);
 //    jrpc_register_procedure(&mJrpc, cmd_getlasterror,"getlasterror", NULL);
-//    jrpc_register_procedure(&mJrpc, cmd_debug,       "debug", NULL);
 //    jrpc_register_procedure(&mJrpc, cmd_getcommittx, "getcommittx", NULL);
 //    jrpc_register_procedure(&mJrpc, cmd_disautoconn, "disautoconn", NULL);
 //    jrpc_register_procedure(&mJrpc, cmd_removechannel,"removechannel", NULL);
@@ -472,6 +472,63 @@ static cJSON *cmd_setfeerate(jrpc_context *ctx, cJSON *params, cJSON *id)
     if (!is_end_of_params(params, index++)) goto LABEL_EXIT;
 
     if (!proc_setfeerate(feerate_per_kw, &res, &err)) goto LABEL_EXIT;
+
+LABEL_EXIT:
+    return json_end(ctx, err, res);
+}
+
+static bool proc_dev_debug(uint32_t mask, cJSON **res, int *err)
+{
+    *res = NULL;
+    *err = 0;
+
+    cJSON *result = cJSON_CreateObject();
+
+    char str[10];
+    sprintf(str, "%08x", ln_get_debug());
+    cJSON_AddItemToObject(result, "old", cJSON_CreateString(str));
+
+    uint32_t dbg = ln_get_debug() ^ mask;
+    ln_set_debug(dbg);
+    sprintf(str, "%08x", dbg);
+    if (!LN_DBG_FULFILL()) {
+        LOGD("no fulfill return\n");
+    }
+    if (!LN_DBG_CLOSING_TX()) {
+        LOGD("no closing tx\n");
+    }
+    if (!LN_DBG_MATCH_PREIMAGE()) {
+        LOGD("force preimage mismatch\n");
+    }
+    if (!LN_DBG_NODE_AUTO_CONNECT()) {
+        LOGD("no node Auto connect\n");
+    }
+    if (!LN_DBG_ONION_CREATE_NORMAL_REALM()) {
+        LOGD("create invalid realm onion\n");
+    }
+    if (!LN_DBG_ONION_CREATE_NORMAL_VERSION()) {
+        LOGD("create invalid version onion\n");
+    }
+    cJSON_AddItemToObject(result, "new", cJSON_CreateString(str));
+
+    *res = result;
+    return true;
+}
+
+static cJSON *cmd_dev_debug(jrpc_context *ctx, cJSON *params, cJSON *id)
+{
+    json_start(ctx, params, id);
+
+    int err = RPCERR_PARSE;
+    cJSON *res = NULL;
+    int index = 0;
+
+    uint32_t mask;
+
+    if (!get_u32(params, index++, &mask)) goto LABEL_EXIT;
+    if (!is_end_of_params(params, index++)) goto LABEL_EXIT;
+
+    if (!proc_dev_debug(mask, &res, &err)) goto LABEL_EXIT;
 
 LABEL_EXIT:
     return json_end(ctx, err, res);
