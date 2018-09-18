@@ -34,8 +34,8 @@
 //#include <assert.h>
 //
 #include "jsonrpc-c.h"
-//#include "ln_segwit_addr.h"
-//
+#include "ln_segwit_addr.h"
+
 #include "cmd_json.h"
 #include "ln_db.h"
 //#include "ln_db_lmdb.h"
@@ -68,11 +68,11 @@
 //    cJSON *result;
 //} getcommittx_t;
 //
-//
-//typedef struct {
-//    ln_fieldr_t     **pp_field;
-//    uint8_t         *p_fieldnum;
-//} rfield_prm_t;
+
+typedef struct {
+    ln_fieldr_t     **pp_field;
+    uint8_t         *p_fieldnum;
+} rfield_prm_t;
 
 
 /********************************************************************
@@ -95,11 +95,11 @@ static cJSON *cmd_stop(jrpc_context *ctx, cJSON *params, cJSON *id);
 static cJSON *cmd_getinfo(jrpc_context *ctx, cJSON *params, cJSON *id);
 static cJSON *cmd_setfeerate(jrpc_context *ctx, cJSON *params, cJSON *id);
 static cJSON *cmd_dev_debug(jrpc_context *ctx, cJSON *params, cJSON *id);
+static cJSON *cmd_addinvoice(jrpc_context *ctx, cJSON *params, cJSON *id);
 
 //static cJSON *cmd_connect(jrpc_context *ctx, cJSON *params, cJSON *id);
 //static cJSON *cmd_disconnect(jrpc_context *ctx, cJSON *params, cJSON *id);
 //static cJSON *cmd_fund(jrpc_context *ctx, cJSON *params, cJSON *id);
-//static cJSON *cmd_invoice(jrpc_context *ctx, cJSON *params, cJSON *id);
 //static cJSON *cmd_eraseinvoice(jrpc_context *ctx, cJSON *params, cJSON *id);
 //static cJSON *cmd_listinvoice(jrpc_context *ctx, cJSON *params, cJSON *id);
 //static cJSON *cmd_pay(jrpc_context *ctx, cJSON *params, cJSON *id);
@@ -129,9 +129,9 @@ static cJSON *cmd_dev_debug(jrpc_context *ctx, cJSON *params, cJSON *id);
 //static int cmd_close_unilateral_proc(const uint8_t *pNodeId);
 //
 //static bool json_connect(cJSON *params, int *pIndex, peer_conn_t *pConn);
-//static char *create_bolt11(const uint8_t *pPayHash, uint64_t Amount, uint32_t Expiry, const ln_fieldr_t *pFieldR, uint8_t FieldRNum, uint32_t MinFinalCltvExpiry);
-//static void create_bolt11_rfield(ln_fieldr_t **ppFieldR, uint8_t *pFieldRNum);
-//static bool comp_func_cnl(ln_self_t *self, void *p_db_param, void *p_param);
+static char *create_bolt11(const uint8_t *pPayHash, uint64_t Amount, uint32_t Expiry, const ln_fieldr_t *pFieldR, uint8_t FieldRNum, uint32_t MinFinalCltvExpiry);
+static void create_bolt11_rfield(ln_fieldr_t **ppFieldR, uint8_t *pFieldRNum);
+static bool comp_func_cnl(ln_self_t *self, void *p_db_param, void *p_param);
 //static lnapp_conf_t *search_connected_lnapp_node(const uint8_t *p_node_id);
 //static int send_json(const char *pSend, const char *pAddr, uint16_t Port);
 //static bool comp_func_getcommittx(ln_self_t *self, void *p_db_param, void *p_param);
@@ -150,11 +150,11 @@ void cmd_json_start(uint16_t Port)
     jrpc_register_procedure(&mJrpc, cmd_getinfo,        "getinfo",  NULL);
     jrpc_register_procedure(&mJrpc, cmd_setfeerate,     "setfeerate", NULL);
     jrpc_register_procedure(&mJrpc, cmd_dev_debug,      "dev-debug", NULL);
+    jrpc_register_procedure(&mJrpc, cmd_addinvoice,     "addinvoice", NULL);
     //TODO
 //    jrpc_register_procedure(&mJrpc, cmd_connect,     "connect", NULL);
 //    jrpc_register_procedure(&mJrpc, cmd_disconnect,  "disconnect", NULL);
 //    jrpc_register_procedure(&mJrpc, cmd_fund,        "fund", NULL);
-//    jrpc_register_procedure(&mJrpc, cmd_invoice,     "invoice", NULL);
 //    jrpc_register_procedure(&mJrpc, cmd_eraseinvoice,"eraseinvoice", NULL);
 //    jrpc_register_procedure(&mJrpc, cmd_listinvoice, "listinvoice", NULL);
 //    jrpc_register_procedure(&mJrpc, cmd_pay,         "PAY", NULL);
@@ -298,7 +298,7 @@ bool get_u32(cJSON *params, int item, uint32_t *u32)
     return true;
 }
 
-bool get_u64(cJSON *params, int item, uint32_t *u64)
+bool get_u64(cJSON *params, int item, uint64_t *u64)
 {
     cJSON *json = cJSON_GetArrayItem(params, item);
     if (!json) return false;
@@ -534,6 +534,86 @@ LABEL_EXIT:
     return json_end(ctx, err, res);
 }
 
+void create_preimage(uint8_t *pPayHash, uint64_t AmountMsat)
+{
+    ln_db_preimg_t preimg;
+
+    btc_util_random(preimg.preimage, LN_SZ_PREIMAGE);
+
+    ptarmd_preimage_lock();
+    preimg.amount_msat = AmountMsat;
+    preimg.expiry = LN_INVOICE_EXPIRY;
+    preimg.creation_time = 0;
+    ln_db_preimg_save(&preimg, NULL);
+    ptarmd_preimage_unlock();
+
+    ln_calc_preimage_hash(pPayHash, preimg.preimage);
+}
+
+static bool proc_addinvoice(uint64_t amount, uint32_t min_final_cltv_expiry, cJSON **res, int *err)
+{
+    *res = NULL;
+    *err = 0;
+
+    LOGD("addinvoice\n");
+    LOGD("amount=%" PRIu64 "\n", amount);
+    LOGD("min_final_cltv_expiry=%" PRIu32 "\n", min_final_cltv_expiry);
+
+    uint8_t preimage_hash[LN_SZ_HASH];
+    create_preimage(preimage_hash, amount);
+
+    ln_fieldr_t *p_rfield = NULL;
+    uint8_t rfieldnum = 0;
+    create_bolt11_rfield(&p_rfield, &rfieldnum);
+
+    char *p_invoice = create_bolt11(preimage_hash, amount,
+                        LN_INVOICE_EXPIRY, p_rfield, rfieldnum,
+                        min_final_cltv_expiry);
+    if (!p_invoice) {
+        LOGD("fail: BOLT11 format\n");
+        *err = RPCERR_PARSE;
+        UTL_DBG_FREE(p_rfield);
+        return false;
+    }
+
+    char str_hash[LN_SZ_HASH * 2 + 1];
+    utl_misc_bin2str(str_hash, preimage_hash, LN_SZ_HASH);
+    *res = cJSON_CreateObject();
+    cJSON_AddItemToObject(*res, "hash", cJSON_CreateString(str_hash));
+    cJSON_AddItemToObject(*res, "amount", cJSON_CreateNumber64(amount));
+    cJSON_AddItemToObject(*res, "min_final_cltv_expiry", cJSON_CreateNumber64(min_final_cltv_expiry));
+    cJSON_AddItemToObject(*res, "bolt11", cJSON_CreateString(p_invoice));
+
+    free(p_invoice);
+    UTL_DBG_FREE(p_rfield);
+    return true;
+}
+
+static cJSON *cmd_addinvoice(jrpc_context *ctx, cJSON *params, cJSON *id)
+{
+    json_start(ctx, params, id);
+
+    int err = RPCERR_PARSE;
+    cJSON *res = NULL;
+    int index = 0;
+
+    uint64_t amount;
+    uint32_t min_final_cltv_expiry;
+
+    if (!get_u64(params, index++, &amount)) goto LABEL_EXIT;
+    if (is_end_of_params(params, index)) {
+        min_final_cltv_expiry = LN_MIN_FINAL_CLTV_EXPIRY;
+    } else {
+        if (!get_u32(params, index++, &min_final_cltv_expiry)) goto LABEL_EXIT;
+    }
+    if (!is_end_of_params(params, index++)) goto LABEL_EXIT;
+
+    if (!proc_addinvoice(amount, min_final_cltv_expiry, &res, &err)) goto LABEL_EXIT;
+
+LABEL_EXIT:
+    return json_end(ctx, err, res);
+}
+
 /** 接続 : ptarmcli -c
  *
  */
@@ -755,73 +835,6 @@ LABEL_EXIT:
 /** invoice作成 : ptarmcli -i
  *
  */
-//static cJSON *cmd_invoice(jrpc_context *ctx, cJSON *params, cJSON *id)
-//{
-//    (void)id;
-//
-//    int err = RPCERR_PARSE;
-//    cJSON *json;
-//    uint64_t amount = 0;
-//    cJSON *result = NULL;
-//    int index = 0;
-//    uint32_t min_final_cltv_expiry;
-//
-//    if (params == NULL) {
-//        goto LABEL_EXIT;
-//    }
-//
-//    //amount
-//    json = cJSON_GetArrayItem(params, index++);
-//    if (json && (json->type == cJSON_Number)) {
-//        amount = json->valueu64;
-//        LOGD("amount=%" PRIu64 "\n", amount);
-//    } else {
-//        goto LABEL_EXIT;
-//    }
-//    //min_final_cltv_expiry
-//    json = cJSON_GetArrayItem(params, index++);
-//    if (json && (json->type == cJSON_Number) && (json->valueint != 0)) {
-//        min_final_cltv_expiry = json->valueint;
-//        LOGD("min_final_cltv_expiry=%" PRIu32 "\n", min_final_cltv_expiry);
-//    } else {
-//        //デフォルト値
-//        min_final_cltv_expiry = LN_MIN_FINAL_CLTV_EXPIRY;
-//    }
-//
-//    uint8_t preimage_hash[LN_SZ_HASH];
-//    err = cmd_invoice_proc(preimage_hash, amount);
-//
-//LABEL_EXIT:
-//    if (err == 0) {
-//        ln_fieldr_t *p_rfield = NULL;
-//        uint8_t rfieldnum = 0;
-//        create_bolt11_rfield(&p_rfield, &rfieldnum);
-//        char *p_invoice = create_bolt11(preimage_hash, amount,
-//                            LN_INVOICE_EXPIRY, p_rfield, rfieldnum,
-//                            min_final_cltv_expiry);
-//
-//        if (p_invoice != NULL) {
-//            char str_hash[LN_SZ_HASH * 2 + 1];
-//
-//            utl_misc_bin2str(str_hash, preimage_hash, LN_SZ_HASH);
-//            result = cJSON_CreateObject();
-//            cJSON_AddItemToObject(result, "hash", cJSON_CreateString(str_hash));
-//            cJSON_AddItemToObject(result, "amount", cJSON_CreateNumber64(amount));
-//            cJSON_AddItemToObject(result, "bolt11", cJSON_CreateString(p_invoice));
-//
-//            free(p_invoice);
-//        } else {
-//            LOGD("fail: BOLT11 format\n");
-//            err = RPCERR_PARSE;
-//        }
-//        UTL_DBG_FREE(p_rfield);
-//    }
-//    if (err != 0) {
-//        ctx->error_code = err;
-//        ctx->error_message = ptarmd_error_str(err);
-//    }
-//    return result;
-//}
 
 
 /** invice削除 : ptarmcli -e
@@ -1533,24 +1546,6 @@ LABEL_EXIT:
  * @param[in]   AmountMsat
  * @retval  エラーコード
  */
-//static int cmd_invoice_proc(uint8_t *pPayHash, uint64_t AmountMsat)
-//{
-//    LOGD("invoice\n");
-//
-//    ln_db_preimg_t preimg;
-//
-//    btc_util_random(preimg.preimage, LN_SZ_PREIMAGE);
-//
-//    ptarmd_preimage_lock();
-//    preimg.amount_msat = AmountMsat;
-//    preimg.expiry = LN_INVOICE_EXPIRY;
-//    preimg.creation_time = 0;
-//    ln_db_preimg_save(&preimg, NULL);
-//    ptarmd_preimage_unlock();
-//
-//    ln_calc_preimage_hash(pPayHash, preimg.preimage);
-//    return 0;
-//}
 
 
 /** invoice削除
@@ -1828,23 +1823,23 @@ LABEL_EXIT:
  * ただ、その経路は自分へ向いているため、channelの相手が送信するchannel_updateの情報を追加することになる。
  * 現在接続していなくても、送金時には接続している可能性があるため、r fieldに追加する。
  */
-//static void create_bolt11_rfield(ln_fieldr_t **ppFieldR, uint8_t *pFieldRNum)
-//{
-//    rfield_prm_t prm;
-//
-//    *ppFieldR = NULL;
-//    *pFieldRNum = 0;
-//
-//    prm.pp_field = ppFieldR;
-//    prm.p_fieldnum = pFieldRNum;
-//    ln_db_self_search(comp_func_cnl, &prm);
-//
-//    if (*pFieldRNum != 0) {
-//        LOGD("add r_field: %d\n", *pFieldRNum);
-//    } else {
-//        LOGD("no r_field\n");
-//    }
-//}
+static void create_bolt11_rfield(ln_fieldr_t **ppFieldR, uint8_t *pFieldRNum)
+{
+    rfield_prm_t prm;
+
+    *ppFieldR = NULL;
+    *pFieldRNum = 0;
+
+    prm.pp_field = ppFieldR;
+    prm.p_fieldnum = pFieldRNum;
+    ln_db_self_search(comp_func_cnl, &prm);
+
+    if (*pFieldRNum != 0) {
+        LOGD("add r_field: %d\n", *pFieldRNum);
+    } else {
+        LOGD("no r_field\n");
+    }
+}
 
 
 /** #ln_node_search_channel()処理関数
@@ -1853,64 +1848,64 @@ LABEL_EXIT:
  * @param[in,out]   p_db_param      DB情報(ln_dbで使用する)
  * @param[in,out]   p_param         rfield_prm_t構造体
  */
-//static bool comp_func_cnl(ln_self_t *self, void *p_db_param, void *p_param)
-//{
-//    (void)p_db_param;
-//
-//    bool ret;
-//    rfield_prm_t *prm = (rfield_prm_t *)p_param;
-//
-//    utl_buf_t buf_bolt = UTL_BUF_INIT;
-//    ln_cnl_update_t msg;
-//    ret = ln_get_channel_update_peer(self, &buf_bolt, &msg);
-//    if (ret && !ln_is_announced(self)) {
-//        size_t sz = (1 + *prm->p_fieldnum) * sizeof(ln_fieldr_t);
-//        *prm->pp_field = (ln_fieldr_t *)UTL_DBG_REALLOC(*prm->pp_field, sz);
-//
-//        ln_fieldr_t *pfield = *prm->pp_field + *prm->p_fieldnum;
-//        memcpy(pfield->node_id, ln_their_node_id(self), BTC_SZ_PUBKEY);
-//        pfield->short_channel_id = ln_short_channel_id(self);
-//        pfield->fee_base_msat = msg.fee_base_msat;
-//        pfield->fee_prop_millionths = msg.fee_prop_millionths;
-//        pfield->cltv_expiry_delta = msg.cltv_expiry_delta;
-//
-//        (*prm->p_fieldnum)++;
-//        LOGD("r_field num=%d\n", *prm->p_fieldnum);
-//    }
-//    utl_buf_free(&buf_bolt);
-//
-//    return false;
-//}
+static bool comp_func_cnl(ln_self_t *self, void *p_db_param, void *p_param)
+{
+    (void)p_db_param;
+
+    bool ret;
+    rfield_prm_t *prm = (rfield_prm_t *)p_param;
+
+    utl_buf_t buf_bolt = UTL_BUF_INIT;
+    ln_cnl_update_t msg;
+    ret = ln_get_channel_update_peer(self, &buf_bolt, &msg);
+    if (ret && !ln_is_announced(self)) {
+        size_t sz = (1 + *prm->p_fieldnum) * sizeof(ln_fieldr_t);
+        *prm->pp_field = (ln_fieldr_t *)UTL_DBG_REALLOC(*prm->pp_field, sz);
+
+        ln_fieldr_t *pfield = *prm->pp_field + *prm->p_fieldnum;
+        memcpy(pfield->node_id, ln_their_node_id(self), BTC_SZ_PUBKEY);
+        pfield->short_channel_id = ln_short_channel_id(self);
+        pfield->fee_base_msat = msg.fee_base_msat;
+        pfield->fee_prop_millionths = msg.fee_prop_millionths;
+        pfield->cltv_expiry_delta = msg.cltv_expiry_delta;
+
+        (*prm->p_fieldnum)++;
+        LOGD("r_field num=%d\n", *prm->p_fieldnum);
+    }
+    utl_buf_free(&buf_bolt);
+
+    return false;
+}
 
 
 /** BOLT11文字列生成
  *
  */
-//static char *create_bolt11(const uint8_t *pPayHash, uint64_t Amount, uint32_t Expiry, const ln_fieldr_t *pFieldR, uint8_t FieldRNum, uint32_t MinFinalCltvExpiry)
-//{
-//    uint8_t type;
-//    btc_genesis_t gtype = btc_util_get_genesis(ln_get_genesishash());
-//    switch (gtype) {
-//    case BTC_GENESIS_BTCMAIN:
-//        type = LN_INVOICE_MAINNET;
-//        break;
-//    case BTC_GENESIS_BTCTEST:
-//        type = LN_INVOICE_TESTNET;
-//        break;
-//    case BTC_GENESIS_BTCREGTEST:
-//        type = LN_INVOICE_REGTEST;
-//        break;
-//    default:
-//        type = BTC_GENESIS_UNKNOWN;
-//        break;
-//    }
-//    char *p_invoice = NULL;
-//    if (type != BTC_GENESIS_UNKNOWN) {
-//        ln_invoice_create(&p_invoice, type,
-//                pPayHash, Amount, Expiry, pFieldR, FieldRNum, MinFinalCltvExpiry);
-//    }
-//    return p_invoice;
-//}
+static char *create_bolt11(const uint8_t *pPayHash, uint64_t Amount, uint32_t Expiry, const ln_fieldr_t *pFieldR, uint8_t FieldRNum, uint32_t MinFinalCltvExpiry)
+{
+    uint8_t type;
+    btc_genesis_t gtype = btc_util_get_genesis(ln_get_genesishash());
+    switch (gtype) {
+    case BTC_GENESIS_BTCMAIN:
+        type = LN_INVOICE_MAINNET;
+        break;
+    case BTC_GENESIS_BTCTEST:
+        type = LN_INVOICE_TESTNET;
+        break;
+    case BTC_GENESIS_BTCREGTEST:
+        type = LN_INVOICE_REGTEST;
+        break;
+    default:
+        type = BTC_GENESIS_UNKNOWN;
+        break;
+    }
+    char *p_invoice = NULL;
+    if (type != BTC_GENESIS_UNKNOWN) {
+        ln_invoice_create(&p_invoice, type,
+                pPayHash, Amount, Expiry, pFieldR, FieldRNum, MinFinalCltvExpiry);
+    }
+    return p_invoice;
+}
 
 
 /** 接続済みlnapp_conf_t取得
