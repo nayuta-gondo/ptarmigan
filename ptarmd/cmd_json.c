@@ -37,12 +37,12 @@
 //#include "ln_segwit_addr.h"
 //
 #include "cmd_json.h"
-//#include "ln_db.h"
+#include "ln_db.h"
 //#include "ln_db_lmdb.h"
 //#include "btcrpc.h"
 //
-//#include "p2p_svr.h"
-//#include "p2p_cli.h"
+#include "p2p_svr.h"
+#include "p2p_cli.h"
 //#include "lnapp.h"
 #include "monitoring.h"
 #include "ptarmd.h"
@@ -53,7 +53,7 @@
  ********************************************************************/
 
 //#define M_SZ_JSONSTR            (8192)
-//#define M_SZ_PAYERR             (128)
+#define M_SZ_PAYERR             (128)
 //
 //#define M_RETRY_CONN_CHK        (10)        ///< 接続チェック[sec]
 
@@ -80,7 +80,7 @@
  ********************************************************************/
 
 static struct jrpc_server   mJrpc;
-//static char                 mLastPayErr[M_SZ_PAYERR];       //最後に送金エラーが発生した時刻
+static char                 mLastPayErr[M_SZ_PAYERR];       //最後に送金エラーが発生した時刻
 //static int                  mPayTryCount = 0;               //送金トライ回数
 //
 //static const char *kOK = "OK";
@@ -360,13 +360,10 @@ LABEL_EXIT:
     return json_end(ctx, err, res);
 }
 
-static cJSON *cmd_getinfo(jrpc_context *ctx, cJSON *params, cJSON *id)
+static bool proc_getinfo(cJSON **res, int *err)
 {
-    json_start(ctx, params, id);
-    //XXX
-
-#if 0
-    (void)ctx; (void)params; (void)id;
+    *res = NULL;
+    *err = 0;
 
     cJSON *result = cJSON_CreateObject();
     cJSON *result_peer = cJSON_CreateArray();
@@ -412,9 +409,24 @@ static cJSON *cmd_getinfo(jrpc_context *ctx, cJSON *params, cJSON *id)
     }
     cJSON_AddItemToObject(result, "last_errpay_date", cJSON_CreateString(mLastPayErr));
 
-    return result;
-#endif
-    return NULL;
+    *res = result;
+    return true;
+}
+
+static cJSON *cmd_getinfo(jrpc_context *ctx, cJSON *params, cJSON *id)
+{
+    json_start(ctx, params, id);
+
+    int err = RPCERR_PARSE;
+    cJSON *res = NULL;
+    int index = 0;
+
+    if (!is_end_of_params(params, index++)) goto LABEL_EXIT;
+
+    if (!proc_getinfo(&res, &err)) goto LABEL_EXIT;
+
+LABEL_EXIT:
+    return json_end(ctx, err, res);
 }
 
 /** 接続 : ptarmcli -c
