@@ -90,7 +90,7 @@ static struct jrpc_server   mJrpc;
  * prototypes
  ********************************************************************/
 
-static cJSON *req_foo(jrpc_context *ctx, cJSON *params, cJSON *id);
+static cJSON *cmd_foo(jrpc_context *ctx, cJSON *params, cJSON *id);
 static cJSON *cmd_stop(jrpc_context *ctx, cJSON *params, cJSON *id);
 static cJSON *cmd_getinfo(jrpc_context *ctx, cJSON *params, cJSON *id);
 
@@ -145,7 +145,7 @@ void cmd_json_start(uint16_t Port)
 {
     jrpc_server_init(&mJrpc, Port);
 
-    jrpc_register_procedure(&mJrpc, req_foo, "foo",  NULL);
+    jrpc_register_procedure(&mJrpc, cmd_foo, "foo",  NULL);
     jrpc_register_procedure(&mJrpc, cmd_stop, "stop",  NULL);
     jrpc_register_procedure(&mJrpc, cmd_getinfo, "getinfo",  NULL);
     //TODO
@@ -229,9 +229,9 @@ int cmd_json_pay_retry(const uint8_t *pPayHash) {
 
 #define json_start(ctx, params, id) (void)(ctx); (void)(params); (void)(id);
 
-static cJSON *json_end(jrpc_context *ctx, int err, cJSON *result) {
+static cJSON *json_end(jrpc_context *ctx, int err, cJSON *res) {
     if (err == 0) {
-        return result ? result : cJSON_CreateString("OK");
+        return res ? res : cJSON_CreateString("OK");
     } else {
         ctx->error_code = err;
         ctx->error_message = ptarmd_error_str(err); //XXX
@@ -298,24 +298,24 @@ bool is_end_of_params(cJSON *params, int item)
 }
 
 
-static cJSON *res_foo(const char *aaa, uint32_t bbb, int *err)
+static bool proc_foo(const char *aaa, uint32_t bbb, cJSON **res, int *err)
 {
     *err = 0;
     LOGD("aaa=%s\n", aaa);
     LOGD("bbb=%u\n", bbb);
 
-    cJSON *result = cJSON_CreateObject();
-    cJSON_AddItemToObject(result, "AAA", cJSON_CreateString("AAA"));
-    cJSON_AddItemToObject(result, "BBB", cJSON_CreateNumber(1234));
-    return result;
+    *res = cJSON_CreateObject();
+    cJSON_AddItemToObject(*res, "AAA", cJSON_CreateString("AAA"));
+    cJSON_AddItemToObject(*res, "BBB", cJSON_CreateNumber(1234));
+    return true;
 }
 
-static cJSON *req_foo(jrpc_context *ctx, cJSON *params, cJSON *id)
+static cJSON *cmd_foo(jrpc_context *ctx, cJSON *params, cJSON *id)
 {
     json_start(ctx, params, id);
 
     int err = RPCERR_PARSE;
-    cJSON *result = NULL;
+    cJSON *res = NULL;
     int index = 0;
 
     const char *aaa;
@@ -325,11 +325,10 @@ static cJSON *req_foo(jrpc_context *ctx, cJSON *params, cJSON *id)
     if (!get_u32(params, index++, &bbb)) goto LABEL_EXIT;
     if (!is_end_of_params(params, index++)) goto LABEL_EXIT;
 
-    result = res_foo(aaa, bbb, &err);
-    if (!result) goto LABEL_EXIT;
+    if (!proc_foo(aaa, bbb, &res, &err)) goto LABEL_EXIT;
 
 LABEL_EXIT:
-    return json_end(ctx, err, result);
+    return json_end(ctx, err, res);
 }
 
 static cJSON *cmd_stop(jrpc_context *ctx, cJSON *params, cJSON *id)
