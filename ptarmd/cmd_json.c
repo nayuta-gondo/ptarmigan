@@ -102,13 +102,13 @@ static cJSON *cmd_listinvoices(jrpc_context *ctx, cJSON *params, cJSON *id);
 static cJSON *cmd_decodeinvoice(jrpc_context *ctx, cJSON *params, cJSON *id);
 static cJSON *cmd_connectpeer(jrpc_context *ctx, cJSON *params, cJSON *id);
 static cJSON *cmd_disconnectpeer(jrpc_context *ctx, cJSON *params, cJSON *id);
+static cJSON *cmd_getlasterror(jrpc_context *ctx, cJSON *params, cJSON *id);
 
 //static cJSON *cmd_fund(jrpc_context *ctx, cJSON *params, cJSON *id);
 //static cJSON *cmd_pay(jrpc_context *ctx, cJSON *params, cJSON *id);
 //static cJSON *cmd_routepay_first(jrpc_context *ctx, cJSON *params, cJSON *id);
 //static cJSON *cmd_routepay(jrpc_context *ctx, cJSON *params, cJSON *id);
 //static cJSON *cmd_close(jrpc_context *ctx, cJSON *params, cJSON *id);
-//static cJSON *cmd_getlasterror(jrpc_context *ctx, cJSON *params, cJSON *id);
 //static cJSON *cmd_getcommittx(jrpc_context *ctx, cJSON *params, cJSON *id);
 //static cJSON *cmd_disautoconn(jrpc_context *ctx, cJSON *params, cJSON *id);
 //static cJSON *cmd_removechannel(jrpc_context *ctx, cJSON *params, cJSON *id);
@@ -159,6 +159,7 @@ void cmd_json_start(uint16_t Port)
     jrpc_register_procedure(&mJrpc, cmd_decodeinvoice,      "decodeinvoice", NULL);
     jrpc_register_procedure(&mJrpc, cmd_connectpeer,        "connectpeer", NULL);
     jrpc_register_procedure(&mJrpc, cmd_disconnectpeer,     "disconnectpeer", NULL);
+    jrpc_register_procedure(&mJrpc, cmd_getlasterror,       "getlasterror", NULL);
     //TODO
 //    jrpc_register_procedure(&mJrpc, cmd_fund,        "fund", NULL);
 //    jrpc_register_procedure(&mJrpc, cmd_eraseinvoice,"eraseinvoice", NULL);
@@ -166,7 +167,6 @@ void cmd_json_start(uint16_t Port)
 //    jrpc_register_procedure(&mJrpc, cmd_routepay_first, "routepay", NULL);
 //    jrpc_register_procedure(&mJrpc, cmd_routepay,    "routepay_cont", NULL);
 //    jrpc_register_procedure(&mJrpc, cmd_close,       "close", NULL);
-//    jrpc_register_procedure(&mJrpc, cmd_getlasterror,"getlasterror", NULL);
 //    jrpc_register_procedure(&mJrpc, cmd_getcommittx, "getcommittx", NULL);
 //    jrpc_register_procedure(&mJrpc, cmd_disautoconn, "disautoconn", NULL);
 //    jrpc_register_procedure(&mJrpc, cmd_removechannel,"removechannel", NULL);
@@ -859,6 +859,19 @@ LABEL_EXIT:
     return json_end(ctx, err, res);
 }
 
+static bool parse_peer_node_id(uint8_t node_id_bin[BTC_SZ_PUBKEY], const char *node_id_str)
+{
+    if (!utl_misc_str2bin(node_id_bin, BTC_SZ_PUBKEY, node_id_str)) {
+        LOGD("fail: invalid node_id=%s\n", node_id_str);
+        return false;
+    }
+    if (!memcmp(ln_node_getid(), node_id_bin, BTC_SZ_PUBKEY)) {
+        LOGD("fail: same own node_id=%s\n", node_id_str);
+        return false;
+    }
+    return true;
+}
+
 static bool proc_connectpeer(const char *peer_nodeid, const char *addr, uint16_t port, cJSON **res, int *err)
 {
     *res = NULL;
@@ -872,14 +885,8 @@ static bool proc_connectpeer(const char *peer_nodeid, const char *addr, uint16_t
     peer_conn_t conn;
 
     //create conn
-    if (!utl_misc_str2bin(conn.node_id, BTC_SZ_PUBKEY, peer_nodeid)) {
+    if (!parse_peer_node_id(conn.node_id, peer_nodeid)) {
         *err = RPCERR_PARSE;
-        LOGD("fail: invalid node_id=%s\n", peer_nodeid);
-        return false;
-    }
-    if (memcmp(ln_node_getid(), conn.node_id, BTC_SZ_PUBKEY) == 0) {
-        *err = RPCERR_PARSE;
-        LOGD("fail: same own node_id=%s\n", peer_nodeid);
         return false;
     }
     if (strlen(addr) > SZ_IPV4_LEN) {
@@ -950,14 +957,8 @@ static bool proc_disconnectpeer(const char *peer_nodeid, cJSON **res, int *err)
 
     //node_id
     uint8_t node_id[BTC_SZ_PUBKEY];
-    if (!utl_misc_str2bin(node_id, BTC_SZ_PUBKEY, peer_nodeid)) {
+    if (!parse_peer_node_id(node_id, peer_nodeid)) {
         *err = RPCERR_PARSE;
-        LOGD("fail: invalid node_id=%s\n", peer_nodeid);
-        return false;
-    }
-    if (memcmp(ln_node_getid(), node_id, BTC_SZ_PUBKEY) == 0) {
-        *err = RPCERR_PARSE;
-        LOGD("fail: same own node_id=%s\n", peer_nodeid);
         return false;
     }
 
@@ -985,6 +986,51 @@ static cJSON *cmd_disconnectpeer(jrpc_context *ctx, cJSON *params, cJSON *id)
     if (!is_end_of_params(params, index++)) goto LABEL_EXIT;
 
     if (!proc_disconnectpeer(peer_nodeid, &res, &err)) goto LABEL_EXIT;
+
+LABEL_EXIT:
+    return json_end(ctx, err, res);
+}
+
+static bool proc_getlasterror(const char *peer_nodeid, cJSON **res, int *err)
+{
+    *res = NULL;
+    *err = 0;
+
+    LOGD("getlasterror\n");
+    LOGD("peer_nodeid=%s\n", peer_nodeid);
+
+    //node_id
+    uint8_t node_id[BTC_SZ_PUBKEY];
+    if (!parse_peer_node_id(node_id, peer_nodeid)) {
+        *err = RPCERR_PARSE;
+        return false;
+    }
+
+    //getlasterror
+    lnapp_conf_t *p_appconf = search_connected_lnapp_node(node_id);
+    if (!p_appconf) {
+        *err = RPCERR_NOCONN;
+        return false;
+    }
+    LOGD("error code: %d\n", p_appconf->err);
+    *err = p_appconf->err;
+    return *err ? false : true;
+}
+
+static cJSON *cmd_getlasterror(jrpc_context *ctx, cJSON *params, cJSON *id)
+{
+    json_start(ctx, params, id);
+
+    int err = RPCERR_PARSE;
+    cJSON *res = NULL;
+    int index = 0;
+
+    const char *peer_nodeid;
+
+    if (!get_string(params, index++, &peer_nodeid)) goto LABEL_EXIT;
+    if (!is_end_of_params(params, index++)) goto LABEL_EXIT;
+
+    if (!proc_getlasterror(peer_nodeid, &res, &err)) goto LABEL_EXIT;
 
 LABEL_EXIT:
     return json_end(ctx, err, res);
