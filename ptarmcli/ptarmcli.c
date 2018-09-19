@@ -119,6 +119,7 @@ int main(int argc, char *argv[])
         {"dev-debug", 0},
         {"addinvoice", 0},
         {"addinvoice", 1},
+        {"connectpeer", 2},
         {NULL, 0}, //watchdog
     };
     utl_str_t body;
