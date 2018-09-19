@@ -747,6 +747,36 @@ LABEL_EXIT:
 
 static bool proc_decodeinvoice(const char *bolt11, cJSON **res, int *err)
 {
+    /* test data
+    $ ./ptarmcli decodeinvoice lnbcrt1234560p1pd6r3wvnp4qwwxvye6sn9swafnzmwdzs3av4463y9nc56agdnanxrp5s08wdjvypp5zmkds8hcn4uuxm58s0uc749xt07wljdg3nxapmlx7qxtyuq28pusdq0wp6xzundd9nkzmsr9yqdzf60m9qpxn7x3ufanwrzq6we8pg0fxgc9th50d8d6eej57pvp45qqpkyqqqpqqqqqqqqq2qqqqqeqqysp082eh2xv3qh8lplxzmp2apwrekre6rz2svk0duslyefqu8tuqnjgqqxcsqqqxqqqqqqqqpgqqqqryqqjqu48seumdx9wftvvkafnu95uq6fns96usq7z22eaqnptlw3pr225zrhs974rxxhg52gsp9xgzdvt8w539svau75wszwkth766u82lvusp3zafd4 | jq
+    {
+      "result": {
+        "currency": "bitcoin regtest",
+        "amount": 123456,
+        "timestamp": 1537328588,
+        "min_final_cltv_expiry": 9,
+        "pubkey": "039c66133a84cb07753316dcd1423d656ba890b3c535d4367d99861a41e77364c2",
+        "payment_hash": "16ecd81ef89d79c36e8783f98f54a65bfcefc9a88ccdd0efe6f00cb2700a3879",
+        "extra_routing_information": [
+          {
+            "pubkey": "03449d3f65004d3f1a3c4f66e1881a764e143d26460abbd1ed3b759cca9e0b035a",
+            "short_channel_id,": "0001b10000040000",
+            "fee_base_msat": 10,
+            "fee_proportional_millionths": 100,
+            "cltv_expiry_delta": 36
+          },
+          {
+            "pubkey": "02f3ab375199105cff0fcc2d855d0b879b0f3a18950659ede43e4ca41c3af809c9",
+            "short_channel_id,": "0001b10000060000",
+            "fee_base_msat": 10,
+            "fee_proportional_millionths": 100,
+            "cltv_expiry_delta": 36
+          }
+        ]
+      }
+    }
+    */
+
     *res = NULL;
     *err = 0;
 
