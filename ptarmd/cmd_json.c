@@ -99,6 +99,7 @@ static cJSON *cmd_addinvoice(jrpc_context *ctx, cJSON *params, cJSON *id);
 static cJSON *cmd_removeinvoice(jrpc_context *ctx, cJSON *params, cJSON *id);
 static cJSON *cmd_removeallinvoices(jrpc_context *ctx, cJSON *params, cJSON *id);
 static cJSON *cmd_listinvoices(jrpc_context *ctx, cJSON *params, cJSON *id);
+static cJSON *cmd_decodeinvoice(jrpc_context *ctx, cJSON *params, cJSON *id);
 
 //static cJSON *cmd_connect(jrpc_context *ctx, cJSON *params, cJSON *id);
 //static cJSON *cmd_disconnect(jrpc_context *ctx, cJSON *params, cJSON *id);
@@ -155,6 +156,7 @@ void cmd_json_start(uint16_t Port)
     jrpc_register_procedure(&mJrpc, cmd_removeinvoice,      "removeinvoice", NULL);
     jrpc_register_procedure(&mJrpc, cmd_removeallinvoices,  "removeallinvoices", NULL);
     jrpc_register_procedure(&mJrpc, cmd_listinvoices,       "listinvoices", NULL);
+    jrpc_register_procedure(&mJrpc, cmd_decodeinvoice,      "decodeinvoice", NULL);
     //TODO
 //    jrpc_register_procedure(&mJrpc, cmd_connect,     "connect", NULL);
 //    jrpc_register_procedure(&mJrpc, cmd_disconnect,  "disconnect", NULL);
@@ -738,6 +740,90 @@ static cJSON *cmd_listinvoices(jrpc_context *ctx, cJSON *params, cJSON *id)
     if (!is_end_of_params(params, index++)) goto LABEL_EXIT;
 
     if (!proc_listinvoices(&res, &err)) goto LABEL_EXIT;
+
+LABEL_EXIT:
+    return json_end(ctx, err, res);
+}
+
+static bool proc_decodeinvoice(const char *bolt11, cJSON **res, int *err)
+{
+    *res = NULL;
+    *err = 0;
+
+    ln_invoice_t *p_invoice_data = NULL;
+    if (!ln_invoice_decode(&p_invoice_data, bolt11)) {
+        LOGD("fail decode invoice");
+        *err = RPCERR_PARSE;
+        return false;
+    }
+
+    *res = cJSON_CreateObject();
+
+    switch (p_invoice_data->hrp_type) {
+    case LN_INVOICE_MAINNET:
+        cJSON_AddItemToObject(*res, "currency", cJSON_CreateString("bitcoin mainnet"));
+        break;
+    case LN_INVOICE_TESTNET:
+        cJSON_AddItemToObject(*res, "currency", cJSON_CreateString("bitcoin testnet"));
+        break;
+    case LN_INVOICE_REGTEST:
+        cJSON_AddItemToObject(*res, "currency", cJSON_CreateString("bitcoin regtest"));
+        break;
+    default:
+        cJSON_AddItemToObject(*res, "currency", cJSON_CreateString("unknown"));
+    }
+
+    cJSON_AddItemToObject(*res, "amount", cJSON_CreateNumber64(p_invoice_data->amount_msat));
+    cJSON_AddItemToObject(*res, "timestamp", cJSON_CreateNumber64(p_invoice_data->timestamp));
+    cJSON_AddItemToObject(*res, "min_final_cltv_expiry", cJSON_CreateNumber64(p_invoice_data->min_final_cltv_expiry));
+
+    char pubkey[BTC_SZ_PUBKEY * 2 + 1];
+    utl_misc_bin2str(pubkey, p_invoice_data->pubkey, BTC_SZ_PUBKEY);
+    cJSON_AddItemToObject(*res, "pubkey", cJSON_CreateString(pubkey));
+
+    char payment_hash[BTC_SZ_SHA256 * 2 + 1];
+    utl_misc_bin2str(payment_hash, p_invoice_data->payment_hash, BTC_SZ_SHA256);
+    cJSON_AddItemToObject(*res, "payment_hash", cJSON_CreateString(payment_hash));
+
+    cJSON *extra_routing_information = NULL;
+    for (int lp = 0; lp < p_invoice_data->r_field_num; lp++) {
+        if (!extra_routing_information) {
+            extra_routing_information = cJSON_CreateArray();
+            cJSON_AddItemToObject(*res, "extra_routing_information", extra_routing_information);
+        }
+        cJSON *item = cJSON_CreateObject();
+        cJSON_AddItemToArray(extra_routing_information, item);
+        utl_misc_bin2str(pubkey, p_invoice_data->r_field[lp].node_id, BTC_SZ_PUBKEY);
+        cJSON_AddItemToObject(item, "pubkey", cJSON_CreateString(pubkey));
+
+        char short_channel_id[LN_SZ_SHORT_CHANNEL_ID * 2 + 1];
+        sprintf(short_channel_id, "%016" PRIx64, p_invoice_data->r_field[lp].short_channel_id);
+        cJSON_AddItemToObject(item, "short_channel_id,", cJSON_CreateString(short_channel_id));
+
+        cJSON_AddItemToObject(item, "fee_base_msat",
+            cJSON_CreateNumber(p_invoice_data->r_field[lp].fee_base_msat));
+        cJSON_AddItemToObject(item, "fee_proportional_millionths",
+            cJSON_CreateNumber(p_invoice_data->r_field[lp].fee_prop_millionths));
+        cJSON_AddItemToObject(item, "cltv_expiry_delta",
+            cJSON_CreateNumber(p_invoice_data->r_field[lp].cltv_expiry_delta));
+    }
+    return true;
+}
+
+static cJSON *cmd_decodeinvoice(jrpc_context *ctx, cJSON *params, cJSON *id)
+{
+    json_start(ctx, params, id);
+
+    int err = RPCERR_PARSE;
+    cJSON *res = NULL;
+    int index = 0;
+
+    const char *bolt11;
+
+    if (!get_string(params, index++, &bolt11)) goto LABEL_EXIT;
+    if (!is_end_of_params(params, index++)) goto LABEL_EXIT;
+
+    if (!proc_decodeinvoice(bolt11, &res, &err)) goto LABEL_EXIT;
 
 LABEL_EXIT:
     return json_end(ctx, err, res);
