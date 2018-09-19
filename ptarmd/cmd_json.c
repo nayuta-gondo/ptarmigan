@@ -101,8 +101,8 @@ static cJSON *cmd_removeallinvoices(jrpc_context *ctx, cJSON *params, cJSON *id)
 static cJSON *cmd_listinvoices(jrpc_context *ctx, cJSON *params, cJSON *id);
 static cJSON *cmd_decodeinvoice(jrpc_context *ctx, cJSON *params, cJSON *id);
 static cJSON *cmd_connectpeer(jrpc_context *ctx, cJSON *params, cJSON *id);
+static cJSON *cmd_disconnectpeer(jrpc_context *ctx, cJSON *params, cJSON *id);
 
-//static cJSON *cmd_disconnect(jrpc_context *ctx, cJSON *params, cJSON *id);
 //static cJSON *cmd_fund(jrpc_context *ctx, cJSON *params, cJSON *id);
 //static cJSON *cmd_pay(jrpc_context *ctx, cJSON *params, cJSON *id);
 //static cJSON *cmd_routepay_first(jrpc_context *ctx, cJSON *params, cJSON *id);
@@ -158,8 +158,8 @@ void cmd_json_start(uint16_t Port)
     jrpc_register_procedure(&mJrpc, cmd_listinvoices,       "listinvoices", NULL);
     jrpc_register_procedure(&mJrpc, cmd_decodeinvoice,      "decodeinvoice", NULL);
     jrpc_register_procedure(&mJrpc, cmd_connectpeer,        "connectpeer", NULL);
+    jrpc_register_procedure(&mJrpc, cmd_disconnectpeer,     "disconnectpeer", NULL);
     //TODO
-//    jrpc_register_procedure(&mJrpc, cmd_disconnect,  "disconnect", NULL);
 //    jrpc_register_procedure(&mJrpc, cmd_fund,        "fund", NULL);
 //    jrpc_register_procedure(&mJrpc, cmd_eraseinvoice,"eraseinvoice", NULL);
 //    jrpc_register_procedure(&mJrpc, cmd_pay,         "PAY", NULL);
@@ -940,6 +940,55 @@ LABEL_EXIT:
     return json_end(ctx, err, res);
 }
 
+static bool proc_disconnectpeer(const char *peer_nodeid, cJSON **res, int *err)
+{
+    *res = NULL;
+    *err = 0;
+
+    LOGD("disconnect\n");
+    LOGD("peer_nodeid=%s\n", peer_nodeid);
+
+    //node_id
+    uint8_t node_id[BTC_SZ_PUBKEY];
+    if (!utl_misc_str2bin(node_id, BTC_SZ_PUBKEY, peer_nodeid)) {
+        *err = RPCERR_PARSE;
+        LOGD("fail: invalid node_id=%s\n", peer_nodeid);
+        return false;
+    }
+    if (memcmp(ln_node_getid(), node_id, BTC_SZ_PUBKEY) == 0) {
+        *err = RPCERR_PARSE;
+        LOGD("fail: same own node_id=%s\n", peer_nodeid);
+        return false;
+    }
+
+    //disconnect
+    lnapp_conf_t *p_appconf = search_connected_lnapp_node(node_id);
+    if (!p_appconf) {
+        *err = RPCERR_NOCONN;
+        return false;
+    }
+    lnapp_stop(p_appconf);
+    return true;
+}
+
+static cJSON *cmd_disconnectpeer(jrpc_context *ctx, cJSON *params, cJSON *id)
+{
+    json_start(ctx, params, id);
+
+    int err = RPCERR_PARSE;
+    cJSON *res = NULL;
+    int index = 0;
+
+    const char *peer_nodeid;
+
+    if (!get_string(params, index++, &peer_nodeid)) goto LABEL_EXIT;
+    if (!is_end_of_params(params, index++)) goto LABEL_EXIT;
+
+    if (!proc_disconnectpeer(peer_nodeid, &res, &err)) goto LABEL_EXIT;
+
+LABEL_EXIT:
+    return json_end(ctx, err, res);
+}
 
 /** 状態出力 : ptarmcli -l
  *
@@ -999,32 +1048,6 @@ LABEL_EXIT:
 /** 指定channel切断 : ptarmcli -q xxxxx
  *
  */
-//static cJSON *cmd_disconnect(jrpc_context *ctx, cJSON *params, cJSON *id)
-//{
-//    (void)id;
-//
-//    int err = RPCERR_PARSE;
-//    peer_conn_t conn;
-//    cJSON *result = NULL;
-//    int index = 0;
-//
-//    //connect parameter
-//    bool ret = json_connect(params, &index, &conn);
-//    if (!ret) {
-//        goto LABEL_EXIT;
-//    }
-//
-//    err = cmd_disconnect_proc(conn.node_id);
-//
-//LABEL_EXIT:
-//    if (err == 0) {
-//        result = cJSON_CreateString(kOK);
-//    } else {
-//        ctx->error_code = err;
-//        ctx->error_message = ptarmd_error_str(err);
-//    }
-//    return result;
-//}
 
 
 /** ノード終了 : ptarmcli -q
