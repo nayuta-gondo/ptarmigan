@@ -871,6 +871,7 @@ static bool proc_connectpeer(const char *peer_nodeid, const char *addr, uint16_t
 
     peer_conn_t conn;
 
+    //create conn
     if (!utl_misc_str2bin(conn.node_id, BTC_SZ_PUBKEY, peer_nodeid)) {
         *err = RPCERR_PARSE;
         LOGD("fail: invalid node_id=%s\n", peer_nodeid);
@@ -881,11 +882,6 @@ static bool proc_connectpeer(const char *peer_nodeid, const char *addr, uint16_t
         LOGD("fail: same own node_id=%s\n", peer_nodeid);
         return false;
     }
-    if (search_connected_lnapp_node(conn.node_id)) {
-        //aleady connected
-        *err = RPCERR_ALCONN;
-        return false;
-    }
     if (strlen(addr) > SZ_IPV4_LEN) {
         *err = RPCERR_PARSE;
         return false;
@@ -893,6 +889,13 @@ static bool proc_connectpeer(const char *peer_nodeid, const char *addr, uint16_t
     strcpy(conn.ipaddr, addr);
     conn.port = port;
 
+    //check aleady connected
+    if (search_connected_lnapp_node(conn.node_id)) {
+        *err = RPCERR_ALCONN;
+        return false;
+    }
+
+    //initiate connection and wait for connecting
     if (!p2p_cli_start(&conn, err)) {
         if (!*err) {
             *err = RPCERR_ERROR;
