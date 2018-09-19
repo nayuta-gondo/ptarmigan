@@ -120,6 +120,7 @@ int main(int argc, char *argv[])
         {"addinvoice", 0},
         {"addinvoice", 1},
         {"connectpeer", 2},
+        {"dev-disableautoconnect", 0},
         {NULL, 0}, //watchdog
     };
     utl_str_t body;

@@ -90,7 +90,6 @@ static char                 mLastPayErr[M_SZ_PAYERR];       //最後に送金エ
  * prototypes
  ********************************************************************/
 
-//static cJSON *cmd_foo(jrpc_context *ctx, cJSON *params, cJSON *id);
 static cJSON *cmd_stop(jrpc_context *ctx, cJSON *params, cJSON *id);
 static cJSON *cmd_getinfo(jrpc_context *ctx, cJSON *params, cJSON *id);
 static cJSON *cmd_setfeerate(jrpc_context *ctx, cJSON *params, cJSON *id);
@@ -103,6 +102,7 @@ static cJSON *cmd_decodeinvoice(jrpc_context *ctx, cJSON *params, cJSON *id);
 static cJSON *cmd_connectpeer(jrpc_context *ctx, cJSON *params, cJSON *id);
 static cJSON *cmd_disconnectpeer(jrpc_context *ctx, cJSON *params, cJSON *id);
 static cJSON *cmd_getlasterror(jrpc_context *ctx, cJSON *params, cJSON *id);
+static cJSON *cmd_dev_disableautoconnect(jrpc_context *ctx, cJSON *params, cJSON *id);
 
 //static cJSON *cmd_fund(jrpc_context *ctx, cJSON *params, cJSON *id);
 //static cJSON *cmd_pay(jrpc_context *ctx, cJSON *params, cJSON *id);
@@ -110,7 +110,6 @@ static cJSON *cmd_getlasterror(jrpc_context *ctx, cJSON *params, cJSON *id);
 //static cJSON *cmd_routepay(jrpc_context *ctx, cJSON *params, cJSON *id);
 //static cJSON *cmd_close(jrpc_context *ctx, cJSON *params, cJSON *id);
 //static cJSON *cmd_getcommittx(jrpc_context *ctx, cJSON *params, cJSON *id);
-//static cJSON *cmd_disautoconn(jrpc_context *ctx, cJSON *params, cJSON *id);
 //static cJSON *cmd_removechannel(jrpc_context *ctx, cJSON *params, cJSON *id);
 //
 //static int cmd_connect_proc(const peer_conn_t *pConn, jrpc_context *ctx);
@@ -147,7 +146,6 @@ void cmd_json_start(uint16_t Port)
 {
     jrpc_server_init(&mJrpc, Port);
 
-    //jrpc_register_procedure(&mJrpc, cmd_foo,        "foo",  NULL);
     jrpc_register_procedure(&mJrpc, cmd_stop,               "stop",  NULL);
     jrpc_register_procedure(&mJrpc, cmd_getinfo,            "getinfo",  NULL);
     jrpc_register_procedure(&mJrpc, cmd_setfeerate,         "setfeerate", NULL);
@@ -160,6 +158,7 @@ void cmd_json_start(uint16_t Port)
     jrpc_register_procedure(&mJrpc, cmd_connectpeer,        "connectpeer", NULL);
     jrpc_register_procedure(&mJrpc, cmd_disconnectpeer,     "disconnectpeer", NULL);
     jrpc_register_procedure(&mJrpc, cmd_getlasterror,       "getlasterror", NULL);
+    jrpc_register_procedure(&mJrpc, cmd_dev_disableautoconnect, "dev-disableautoconnect", NULL);
     //TODO
 //    jrpc_register_procedure(&mJrpc, cmd_fund,        "fund", NULL);
 //    jrpc_register_procedure(&mJrpc, cmd_eraseinvoice,"eraseinvoice", NULL);
@@ -168,7 +167,6 @@ void cmd_json_start(uint16_t Port)
 //    jrpc_register_procedure(&mJrpc, cmd_routepay,    "routepay_cont", NULL);
 //    jrpc_register_procedure(&mJrpc, cmd_close,       "close", NULL);
 //    jrpc_register_procedure(&mJrpc, cmd_getcommittx, "getcommittx", NULL);
-//    jrpc_register_procedure(&mJrpc, cmd_disautoconn, "disautoconn", NULL);
 //    jrpc_register_procedure(&mJrpc, cmd_removechannel,"removechannel", NULL);
     
     jrpc_server_run(&mJrpc);
@@ -317,43 +315,6 @@ bool is_end_of_params(cJSON *params, int item)
     if (cJSON_GetArrayItem(params, item)) return false;
     return true;
 }
-
-/*
-static bool proc_foo(const char *aaa, uint32_t bbb, cJSON **res, int *err)
-{
-    *res = NULL;
-    *err = 0;
-
-    LOGD("aaa=%s\n", aaa);
-    LOGD("bbb=%u\n", bbb);
-
-    *res = cJSON_CreateObject();
-    cJSON_AddItemToObject(*res, "AAA", cJSON_CreateString("AAA"));
-    cJSON_AddItemToObject(*res, "BBB", cJSON_CreateNumber(1234));
-    return true;
-}
-
-static cJSON *cmd_foo(jrpc_context *ctx, cJSON *params, cJSON *id)
-{
-    json_start(ctx, params, id);
-
-    int err = RPCERR_PARSE;
-    cJSON *res = NULL;
-    int index = 0;
-
-    const char *aaa;
-    uint32_t bbb;
-
-    if (!get_string(params, index++, &aaa)) goto LABEL_EXIT;
-    if (!get_u32(params, index++, &bbb)) goto LABEL_EXIT;
-    if (!is_end_of_params(params, index++)) goto LABEL_EXIT;
-
-    if (!proc_foo(aaa, bbb, &res, &err)) goto LABEL_EXIT;
-
-LABEL_EXIT:
-    return json_end(ctx, err, res);
-}
-*/
 
 static bool proc_stop(cJSON **res, int *err)
 {
@@ -1036,6 +997,39 @@ LABEL_EXIT:
     return json_end(ctx, err, res);
 }
 
+static bool proc_dev_disableautoconnect(bool disable, cJSON **res, int *err)
+{
+    *res = NULL;
+    *err = 0;
+
+    monitor_disable_autoconn(disable);
+    if (disable) {
+        *res = cJSON_CreateString("disable auto connect");
+    } else {
+        *res = cJSON_CreateString("enable auto connect");
+    }
+    return true;
+}
+
+static cJSON *cmd_dev_disableautoconnect(jrpc_context *ctx, cJSON *params, cJSON *id)
+{
+    json_start(ctx, params, id);
+
+    int err = RPCERR_PARSE;
+    cJSON *res = NULL;
+    int index = 0;
+
+    bool disable;
+
+    if (!get_bool(params, index++, &disable)) goto LABEL_EXIT;
+    if (!is_end_of_params(params, index++)) goto LABEL_EXIT;
+
+    if (!proc_dev_disableautoconnect(disable, &res, &err)) goto LABEL_EXIT;
+
+LABEL_EXIT:
+    return json_end(ctx, err, res);
+}
+
 /** 状態出力 : ptarmcli -l
  *
  */
@@ -1636,32 +1630,6 @@ LABEL_EXIT:
  *
  * チャネル開設済みのノードに対してはptarmdから自動的に接続しようとするが、その動作を制御する。
  */
-//static cJSON *cmd_disautoconn(jrpc_context *ctx, cJSON *params, cJSON *id)
-//{
-//    (void)id;
-//
-//    const char *p_str = NULL;
-//
-//    cJSON *json = cJSON_GetArrayItem(params, 0);
-//    if (json && (json->type == cJSON_String)) {
-//        if (json->valuestring[0] == '1') {
-//            monitor_disable_autoconn(true);
-//            p_str = "disable auto connect";
-//        } else if (json->valuestring[0] == '0') {
-//            monitor_disable_autoconn(false);
-//            p_str = "enable auto connect";
-//        } else {
-//            //none
-//        }
-//    }
-//    if (p_str != NULL) {
-//        return cJSON_CreateString(p_str);
-//    } else {
-//        ctx->error_code = RPCERR_PARSE;
-//        ctx->error_message = ptarmd_error_str(RPCERR_PARSE);
-//        return NULL;
-//    }
-//}
 
 
 /** チャネル情報削除 : ptarmcli -X
