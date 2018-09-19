@@ -62,12 +62,11 @@
  * typedefs
  ********************************************************************/
 
-//typedef struct {
-//    bool b_local;
-//    const uint8_t *p_nodeid;
-//    cJSON *result;
-//} getcommittx_t;
-//
+typedef struct {
+    bool b_local;
+    const uint8_t *p_nodeid;
+    cJSON *result;
+} listtransactions_t;
 
 typedef struct {
     ln_fieldr_t     **pp_field;
@@ -93,7 +92,7 @@ static char                 mLastPayErr[M_SZ_PAYERR];       //最後に送金エ
 static cJSON *cmd_stop(jrpc_context *ctx, cJSON *params, cJSON *id);
 static cJSON *cmd_getinfo(jrpc_context *ctx, cJSON *params, cJSON *id);
 static cJSON *cmd_setfeerate(jrpc_context *ctx, cJSON *params, cJSON *id);
-static cJSON *cmd_dev_debug(jrpc_context *ctx, cJSON *params, cJSON *id);
+static cJSON *cmd_debug(jrpc_context *ctx, cJSON *params, cJSON *id);
 static cJSON *cmd_addinvoice(jrpc_context *ctx, cJSON *params, cJSON *id);
 static cJSON *cmd_removeinvoice(jrpc_context *ctx, cJSON *params, cJSON *id);
 static cJSON *cmd_removeallinvoices(jrpc_context *ctx, cJSON *params, cJSON *id);
@@ -102,14 +101,14 @@ static cJSON *cmd_decodeinvoice(jrpc_context *ctx, cJSON *params, cJSON *id);
 static cJSON *cmd_connectpeer(jrpc_context *ctx, cJSON *params, cJSON *id);
 static cJSON *cmd_disconnectpeer(jrpc_context *ctx, cJSON *params, cJSON *id);
 static cJSON *cmd_getlasterror(jrpc_context *ctx, cJSON *params, cJSON *id);
-static cJSON *cmd_dev_disableautoconnect(jrpc_context *ctx, cJSON *params, cJSON *id);
+static cJSON *cmd_disableautoconnect(jrpc_context *ctx, cJSON *params, cJSON *id);
+static cJSON *cmd_listtransactions(jrpc_context *ctx, cJSON *params, cJSON *id);
 
 //static cJSON *cmd_fund(jrpc_context *ctx, cJSON *params, cJSON *id);
 //static cJSON *cmd_pay(jrpc_context *ctx, cJSON *params, cJSON *id);
 //static cJSON *cmd_routepay_first(jrpc_context *ctx, cJSON *params, cJSON *id);
 //static cJSON *cmd_routepay(jrpc_context *ctx, cJSON *params, cJSON *id);
 //static cJSON *cmd_close(jrpc_context *ctx, cJSON *params, cJSON *id);
-//static cJSON *cmd_getcommittx(jrpc_context *ctx, cJSON *params, cJSON *id);
 //static cJSON *cmd_removechannel(jrpc_context *ctx, cJSON *params, cJSON *id);
 //
 //static int cmd_connect_proc(const peer_conn_t *pConn, jrpc_context *ctx);
@@ -135,7 +134,6 @@ static void create_bolt11_rfield(ln_fieldr_t **ppFieldR, uint8_t *pFieldRNum);
 static bool comp_func_cnl(ln_self_t *self, void *p_db_param, void *p_param);
 static lnapp_conf_t *search_connected_lnapp_node(const uint8_t *p_node_id);
 //static int send_json(const char *pSend, const char *pAddr, uint16_t Port);
-//static bool comp_func_getcommittx(ln_self_t *self, void *p_db_param, void *p_param);
 
 
 /********************************************************************
@@ -149,7 +147,7 @@ void cmd_json_start(uint16_t Port)
     jrpc_register_procedure(&mJrpc, cmd_stop,               "stop",  NULL);
     jrpc_register_procedure(&mJrpc, cmd_getinfo,            "getinfo",  NULL);
     jrpc_register_procedure(&mJrpc, cmd_setfeerate,         "setfeerate", NULL);
-    jrpc_register_procedure(&mJrpc, cmd_dev_debug,          "dev-debug", NULL);
+    jrpc_register_procedure(&mJrpc, cmd_debug,              "dev-debug", NULL);
     jrpc_register_procedure(&mJrpc, cmd_addinvoice,         "addinvoice", NULL);
     jrpc_register_procedure(&mJrpc, cmd_removeinvoice,      "removeinvoice", NULL);
     jrpc_register_procedure(&mJrpc, cmd_removeallinvoices,  "removeallinvoices", NULL);
@@ -158,7 +156,8 @@ void cmd_json_start(uint16_t Port)
     jrpc_register_procedure(&mJrpc, cmd_connectpeer,        "connectpeer", NULL);
     jrpc_register_procedure(&mJrpc, cmd_disconnectpeer,     "disconnectpeer", NULL);
     jrpc_register_procedure(&mJrpc, cmd_getlasterror,       "getlasterror", NULL);
-    jrpc_register_procedure(&mJrpc, cmd_dev_disableautoconnect, "dev-disableautoconnect", NULL);
+    jrpc_register_procedure(&mJrpc, cmd_disableautoconnect, "dev-disableautoconnect", NULL);
+    jrpc_register_procedure(&mJrpc, cmd_listtransactions,   "dev-listtransactions", NULL);
     //TODO
 //    jrpc_register_procedure(&mJrpc, cmd_fund,        "fund", NULL);
 //    jrpc_register_procedure(&mJrpc, cmd_eraseinvoice,"eraseinvoice", NULL);
@@ -166,7 +165,6 @@ void cmd_json_start(uint16_t Port)
 //    jrpc_register_procedure(&mJrpc, cmd_routepay_first, "routepay", NULL);
 //    jrpc_register_procedure(&mJrpc, cmd_routepay,    "routepay_cont", NULL);
 //    jrpc_register_procedure(&mJrpc, cmd_close,       "close", NULL);
-//    jrpc_register_procedure(&mJrpc, cmd_getcommittx, "getcommittx", NULL);
 //    jrpc_register_procedure(&mJrpc, cmd_removechannel,"removechannel", NULL);
     
     jrpc_server_run(&mJrpc);
@@ -443,7 +441,7 @@ LABEL_EXIT:
     return json_end(ctx, err, res);
 }
 
-static bool proc_dev_debug(uint32_t mask, cJSON **res, int *err)
+static bool proc_debug(uint32_t mask, cJSON **res, int *err)
 {
     *res = NULL;
     *err = 0;
@@ -481,7 +479,7 @@ static bool proc_dev_debug(uint32_t mask, cJSON **res, int *err)
     return true;
 }
 
-static cJSON *cmd_dev_debug(jrpc_context *ctx, cJSON *params, cJSON *id)
+static cJSON *cmd_debug(jrpc_context *ctx, cJSON *params, cJSON *id)
 {
     json_start(ctx, params, id);
 
@@ -494,7 +492,7 @@ static cJSON *cmd_dev_debug(jrpc_context *ctx, cJSON *params, cJSON *id)
     if (!get_u32(params, index++, &mask)) goto LABEL_EXIT;
     if (!is_end_of_params(params, index++)) goto LABEL_EXIT;
 
-    if (!proc_dev_debug(mask, &res, &err)) goto LABEL_EXIT;
+    if (!proc_debug(mask, &res, &err)) goto LABEL_EXIT;
 
 LABEL_EXIT:
     return json_end(ctx, err, res);
@@ -997,7 +995,7 @@ LABEL_EXIT:
     return json_end(ctx, err, res);
 }
 
-static bool proc_dev_disableautoconnect(bool disable, cJSON **res, int *err)
+static bool proc_disableautoconnect(bool disable, cJSON **res, int *err)
 {
     *res = NULL;
     *err = 0;
@@ -1011,7 +1009,7 @@ static bool proc_dev_disableautoconnect(bool disable, cJSON **res, int *err)
     return true;
 }
 
-static cJSON *cmd_dev_disableautoconnect(jrpc_context *ctx, cJSON *params, cJSON *id)
+static cJSON *cmd_disableautoconnect(jrpc_context *ctx, cJSON *params, cJSON *id)
 {
     json_start(ctx, params, id);
 
@@ -1024,7 +1022,65 @@ static cJSON *cmd_dev_disableautoconnect(jrpc_context *ctx, cJSON *params, cJSON
     if (!get_bool(params, index++, &disable)) goto LABEL_EXIT;
     if (!is_end_of_params(params, index++)) goto LABEL_EXIT;
 
-    if (!proc_dev_disableautoconnect(disable, &res, &err)) goto LABEL_EXIT;
+    if (!proc_disableautoconnect(disable, &res, &err)) goto LABEL_EXIT;
+
+LABEL_EXIT:
+    return json_end(ctx, err, res);
+}
+
+static bool comp_func_listtransactions(ln_self_t *self, void *p_db_param, void *p_param)
+{
+    (void)p_db_param;
+
+    listtransactions_t *param = (listtransactions_t *)p_param;
+    if (!memcmp(param->p_nodeid, ln_their_node_id(self), BTC_SZ_PUBKEY)) {
+        lnapp_conf_t appconf;
+        appconf.p_self= self;
+        lnapp_get_committx(&appconf, param->result, param->b_local);
+    }
+    return false;
+}
+
+static bool proc_listtransactions(const char *peer_nodeid, cJSON **res, int *err)
+{
+    *res = NULL;
+    *err = 0;
+
+    LOGD("listtransactions\n");
+    LOGD("peer_nodeid=%s\n", peer_nodeid);
+
+    //node_id
+    uint8_t node_id[BTC_SZ_PUBKEY];
+    if (!parse_peer_node_id(node_id, peer_nodeid)) {
+        *err = RPCERR_PARSE;
+        return false;
+    }
+
+    //listtransactions
+    listtransactions_t param;
+    *res = cJSON_CreateObject();
+    param.b_local = false;
+    param.p_nodeid = node_id;
+    param.result = *res;
+    ln_db_self_search(comp_func_listtransactions, &param);
+    return true;
+}
+
+
+static cJSON *cmd_listtransactions(jrpc_context *ctx, cJSON *params, cJSON *id)
+{
+    json_start(ctx, params, id);
+
+    int err = RPCERR_PARSE;
+    cJSON *res = NULL;
+    int index = 0;
+
+    const char *peer_nodeid;
+
+    if (!get_string(params, index++, &peer_nodeid)) goto LABEL_EXIT;
+    if (!is_end_of_params(params, index++)) goto LABEL_EXIT;
+
+    if (!proc_listtransactions(peer_nodeid, &res, &err)) goto LABEL_EXIT;
 
 LABEL_EXIT:
     return json_end(ctx, err, res);
@@ -1589,41 +1645,6 @@ LABEL_EXIT:
 //}
 
 
-/** commitment transaction出力 : ptarmcli -g
- *
- * commitment transactionおよび関連するtransactionを16進数文字列出力する。
- */
-//static cJSON *cmd_getcommittx(jrpc_context *ctx, cJSON *params, cJSON *id)
-//{
-//    (void)id;
-//
-//    peer_conn_t conn;
-//    cJSON *result = cJSON_CreateObject();
-//    int index = 0;
-//    cJSON *json;
-//
-//    //connect parameter
-//    bool ret = json_connect(params, &index, &conn);
-//    if (!ret) {
-//        goto LABEL_EXIT;
-//    }
-//
-//    LOGD("getcommittx\n");
-//
-//    getcommittx_t prm;
-//    json = cJSON_GetArrayItem(params, 0);
-//    prm.b_local = (json == NULL);
-//    prm.p_nodeid = conn.node_id;
-//    prm.result = result;
-//    ln_db_self_search(comp_func_getcommittx, &prm);
-//
-//LABEL_EXIT:
-//    if (index < 0) {
-//        ctx->error_code = RPCERR_PARSE;
-//        ctx->error_message = ptarmd_error_str(RPCERR_PARSE);
-//    }
-//    return result;
-//}
 
 
 /** チャネル自動接続設定 : ptarmcli -s
@@ -2197,20 +2218,3 @@ static lnapp_conf_t *search_connected_lnapp_node(const uint8_t *p_node_id)
 //}
 
 
-/** getcommittx処理
- *
- */
-//static bool comp_func_getcommittx(ln_self_t *self, void *p_db_param, void *p_param)
-//{
-//    (void)p_db_param;
-//
-//    getcommittx_t *prm = (getcommittx_t *)p_param;
-//
-//    if (memcmp(prm->p_nodeid, ln_their_node_id(self), BTC_SZ_PUBKEY) == 0) {
-//        lnapp_conf_t appconf;
-//        appconf.p_self= self;
-//        lnapp_get_committx(&appconf, prm->result, prm->b_local);
-//    }
-//
-//    return false;
-//}
