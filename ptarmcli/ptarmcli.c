@@ -125,6 +125,7 @@ int main(int argc, char *argv[])
         {"openchannel", 2},
         {"openchannel", 3},
         {"openchannel", 5},
+        {"closechannel", 1},
         {NULL, 0}, //watchdog
     };
     utl_str_t body;

@@ -104,11 +104,11 @@ static cJSON *cmd_getlasterror(jrpc_context *ctx, cJSON *params, cJSON *id);
 static cJSON *cmd_disableautoconnect(jrpc_context *ctx, cJSON *params, cJSON *id);
 static cJSON *cmd_listtransactions(jrpc_context *ctx, cJSON *params, cJSON *id);
 static cJSON *cmd_openchannel(jrpc_context *ctx, cJSON *params, cJSON *id);
+static cJSON *cmd_closechannel(jrpc_context *ctx, cJSON *params, cJSON *id);
 
 //static cJSON *cmd_pay(jrpc_context *ctx, cJSON *params, cJSON *id);
 //static cJSON *cmd_routepay_first(jrpc_context *ctx, cJSON *params, cJSON *id);
 //static cJSON *cmd_routepay(jrpc_context *ctx, cJSON *params, cJSON *id);
-//static cJSON *cmd_close(jrpc_context *ctx, cJSON *params, cJSON *id);
 //static cJSON *cmd_removechannel(jrpc_context *ctx, cJSON *params, cJSON *id);
 //
 //static int cmd_connect_proc(const peer_conn_t *pConn, jrpc_context *ctx);
@@ -124,8 +124,8 @@ static cJSON *cmd_openchannel(jrpc_context *ctx, cJSON *params, cJSON *id);
 //                const ln_invoice_t *pInvoiceData,
 //                const ln_routing_result_t *pRouteResult,
 //                const char *pInvoiceStr, uint64_t AddAmountMsat);
-//static int cmd_close_mutual_proc(const uint8_t *pNodeId);
-//static int cmd_close_unilateral_proc(const uint8_t *pNodeId);
+static int closechannel_mutual(const uint8_t *pNodeId);
+static int closechannel_unilateral(const uint8_t *pNodeId);
 //
 //static bool json_connect(cJSON *params, int *pIndex, peer_conn_t *pConn);
 static char *create_bolt11(const uint8_t *pPayHash, uint64_t Amount, uint32_t Expiry, const ln_fieldr_t *pFieldR, uint8_t FieldRNum, uint32_t MinFinalCltvExpiry);
@@ -158,12 +158,12 @@ void cmd_json_start(uint16_t Port)
     jrpc_register_procedure(&mJrpc, cmd_disableautoconnect, "dev-disableautoconnect", NULL);
     jrpc_register_procedure(&mJrpc, cmd_listtransactions,   "dev-listtransactions", NULL);
     jrpc_register_procedure(&mJrpc, cmd_openchannel,        "openchannel", NULL);
+    jrpc_register_procedure(&mJrpc, cmd_closechannel,       "closechannel", NULL);
     //TODO
 //    jrpc_register_procedure(&mJrpc, cmd_eraseinvoice,"eraseinvoice", NULL);
 //    jrpc_register_procedure(&mJrpc, cmd_pay,         "PAY", NULL);
 //    jrpc_register_procedure(&mJrpc, cmd_routepay_first, "routepay", NULL);
 //    jrpc_register_procedure(&mJrpc, cmd_routepay,    "routepay_cont", NULL);
-//    jrpc_register_procedure(&mJrpc, cmd_close,       "close", NULL);
 //    jrpc_register_procedure(&mJrpc, cmd_removechannel,"removechannel", NULL);
 
     jrpc_server_run(&mJrpc);
@@ -1173,7 +1173,63 @@ static cJSON *cmd_openchannel(jrpc_context *ctx, cJSON *params, cJSON *id)
     if (!is_end_of_params(params, index++)) goto LABEL_EXIT;
 
     if (!proc_openchannel(peer_nodeid, funding_sat, push_sat, feerate_per_kw, txid, txindex, &res, &err)) goto LABEL_EXIT;
+
     res = cJSON_CreateString("Progressing");
+
+LABEL_EXIT:
+    return json_end(ctx, err, res);
+}
+
+static bool proc_closechannel(const char *peer_nodeid, bool force, cJSON **res, int *err)
+{
+    *res = NULL;
+    *err = 0;
+
+    LOGD("closechannel\n");
+    LOGD("force=%s\n", force ? "true" : "false");
+
+    //node_id
+    uint8_t node_id[BTC_SZ_PUBKEY];
+    if (!parse_peer_node_id(node_id, peer_nodeid)) {
+        *err = RPCERR_PARSE;
+        return false;
+    }
+
+    if (force) {
+        *err = closechannel_unilateral(node_id);
+    } else {
+        *err = closechannel_mutual(node_id);
+    }
+
+    return true;
+}
+
+static cJSON *cmd_closechannel(jrpc_context *ctx, cJSON *params, cJSON *id)
+{
+    json_start(ctx, params, id);
+
+    int err = RPCERR_PARSE;
+    cJSON *res = NULL;
+    int index = 0;
+
+    const char *peer_nodeid;
+    bool force;
+
+    if (!get_string(params, index++, &peer_nodeid)) goto LABEL_EXIT;
+    if (is_end_of_params(params, index)) {
+        force = false;
+    } else {
+        if (!get_bool(params, index++, &force)) goto LABEL_EXIT;
+    }
+    if (!is_end_of_params(params, index++)) goto LABEL_EXIT;
+
+    if (!proc_closechannel(peer_nodeid, force, &res, &err)) goto LABEL_EXIT;
+
+    if (force) {
+        res = cJSON_CreateString("Start Unilateral Close");
+    } else {
+        res = cJSON_CreateString("Start Mutual Close");
+    }
 
 LABEL_EXIT:
     return json_end(ctx, err, res);
@@ -1234,11 +1290,6 @@ LABEL_EXIT:
 //}
 
 
-/** 指定channel切断 : ptarmcli -q xxxxx
- *
- */
-
-
 /** ノード終了 : ptarmcli -q
  *
  */
@@ -1260,19 +1311,6 @@ LABEL_EXIT:
 //
 //    return result;
 //}
-
-
-/** channel establish開始 : ptarmcli -f
- *
- */
-//}
-
-
-
-
-/** invoice一覧出力 : ptarmcli -m
- *
- */
 
 
 /** 送金開始(テスト用) : "PAY"
@@ -1530,45 +1568,6 @@ LABEL_EXIT:
 /** channel mutual close開始 : ptarmcli -x
  *
  */
-//static cJSON *cmd_close(jrpc_context *ctx, cJSON *params, cJSON *id)
-//{
-//    (void)id;
-//
-//    int err = RPCERR_PARSE;
-//    peer_conn_t conn;
-//    cJSON *result = NULL;
-//    cJSON *json;
-//    int index = 0;
-//    const char *p_str = "";
-//
-//    //connect parameter
-//    bool ret = json_connect(params, &index, &conn);
-//    if (!ret) {
-//        goto LABEL_EXIT;
-//    }
-//
-//    json = cJSON_GetArrayItem(params, index++);
-//    if ( json && (json->type == cJSON_String) &&
-//         (strcmp(json->valuestring, "force") == 0) ) {
-//        LOGD("force close\n");
-//        p_str = "Start Unilateral Close";
-//        err = cmd_close_unilateral_proc(conn.node_id);
-//    } else {
-//        LOGD("mutual close\n");
-//        p_str = "Start Mutual Close";
-//        err = cmd_close_mutual_proc(conn.node_id);
-//    }
-//
-//LABEL_EXIT:
-//    if (err == 0) {
-//        result = cJSON_CreateString(p_str);
-//    } else {
-//        ctx->error_code = err;
-//        ctx->error_message = ptarmd_error_str(err);
-//    }
-//
-//    return result;
-//}
 
 
 /** 最後に発生したエラー出力 : ptarmcli -w
@@ -1664,14 +1663,6 @@ LABEL_EXIT:
 //LABEL_EXIT:
 //    return result;
 //}
-
-
-
-
-/** チャネル自動接続設定 : ptarmcli -s
- *
- * チャネル開設済みのノードに対してはptarmdから自動的に接続しようとするが、その動作を制御する。
- */
 
 
 /** チャネル情報削除 : ptarmcli -X
@@ -1960,27 +1951,27 @@ LABEL_EXIT:
  * @param[in]       pNodeId
  * @retval  エラーコード
  */
-//static int cmd_close_mutual_proc(const uint8_t *pNodeId)
-//{
-//    LOGD("mutual close\n");
-//
-//    int err;
-//    lnapp_conf_t *p_appconf = search_connected_lnapp_node(pNodeId);
-//    if ((p_appconf != NULL) && (ln_htlc_num(p_appconf->p_self) == 0)) {
-//        //接続中
-//        bool ret = lnapp_close_channel(p_appconf);
-//        if (ret) {
-//            err = 0;
-//        } else {
-//            LOGD("fail: mutual  close\n");
-//            err = RPCERR_CLOSE_START;
-//        }
-//    } else {
-//        err = RPCERR_NOCONN;
-//    }
-//
-//    return err;
-//}
+static int closechannel_mutual(const uint8_t *pNodeId)
+{
+    LOGD("mutual close\n");
+
+    int err;
+    lnapp_conf_t *p_appconf = search_connected_lnapp_node(pNodeId);
+    if ((p_appconf != NULL) && (ln_htlc_num(p_appconf->p_self) == 0)) {
+        //接続中
+        bool ret = lnapp_close_channel(p_appconf);
+        if (ret) {
+            err = 0;
+        } else {
+            LOGD("fail: mutual  close\n");
+            err = RPCERR_CLOSE_START;
+        }
+    } else {
+        err = RPCERR_NOCONN;
+    }
+
+    return err;
+}
 
 
 /** channel unilateral close開始
@@ -1988,27 +1979,27 @@ LABEL_EXIT:
  * @param[in]       pNodeId
  * @retval  エラーコード
  */
-//static int cmd_close_unilateral_proc(const uint8_t *pNodeId)
-//{
-//    LOGD("unilateral close\n");
-//
-//    int err;
-//    bool haveCnl = ln_node_search_channel(NULL, pNodeId);
-//    if (haveCnl) {
-//        bool ret = lnapp_close_channel_force(pNodeId);
-//        if (ret) {
-//            err = 0;
-//        } else {
-//            LOGD("fail: unilateral close\n");
-//            err = RPCERR_CLOSE_FAIL;
-//        }
-//    } else {
-//        //チャネルなし
-//        err = RPCERR_NOCHANN;
-//    }
-//
-//    return err;
-//}
+static int closechannel_unilateral(const uint8_t *pNodeId)
+{
+    LOGD("unilateral close\n");
+
+    int err;
+    bool haveCnl = ln_node_search_channel(NULL, pNodeId);
+    if (haveCnl) {
+        bool ret = lnapp_close_channel_force(pNodeId);
+        if (ret) {
+            err = 0;
+        } else {
+            LOGD("fail: unilateral close\n");
+            err = RPCERR_CLOSE_FAIL;
+        }
+    } else {
+        //チャネルなし
+        err = RPCERR_NOCHANN;
+    }
+
+    return err;
+}
 
 
 /********************************************************************
