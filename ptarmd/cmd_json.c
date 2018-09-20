@@ -103,8 +103,8 @@ static cJSON *cmd_disconnectpeer(jrpc_context *ctx, cJSON *params, cJSON *id);
 static cJSON *cmd_getlasterror(jrpc_context *ctx, cJSON *params, cJSON *id);
 static cJSON *cmd_disableautoconnect(jrpc_context *ctx, cJSON *params, cJSON *id);
 static cJSON *cmd_listtransactions(jrpc_context *ctx, cJSON *params, cJSON *id);
+static cJSON *cmd_openchannel(jrpc_context *ctx, cJSON *params, cJSON *id);
 
-//static cJSON *cmd_fund(jrpc_context *ctx, cJSON *params, cJSON *id);
 //static cJSON *cmd_pay(jrpc_context *ctx, cJSON *params, cJSON *id);
 //static cJSON *cmd_routepay_first(jrpc_context *ctx, cJSON *params, cJSON *id);
 //static cJSON *cmd_routepay(jrpc_context *ctx, cJSON *params, cJSON *id);
@@ -114,7 +114,6 @@ static cJSON *cmd_listtransactions(jrpc_context *ctx, cJSON *params, cJSON *id);
 //static int cmd_connect_proc(const peer_conn_t *pConn, jrpc_context *ctx);
 //static int cmd_disconnect_proc(const uint8_t *pNodeId);
 //static int cmd_stop_proc(void);
-//static int cmd_fund_proc(const uint8_t *pNodeId, const funding_conf_t *pFund);
 //static int cmd_invoice_proc(uint8_t *pPayHash, uint64_t AmountMsat);
 //static int cmd_eraseinvoice_proc(const uint8_t *pPayHash);
 //static int cmd_routepay_proc1(
@@ -158,15 +157,15 @@ void cmd_json_start(uint16_t Port)
     jrpc_register_procedure(&mJrpc, cmd_getlasterror,       "getlasterror", NULL);
     jrpc_register_procedure(&mJrpc, cmd_disableautoconnect, "dev-disableautoconnect", NULL);
     jrpc_register_procedure(&mJrpc, cmd_listtransactions,   "dev-listtransactions", NULL);
+    jrpc_register_procedure(&mJrpc, cmd_openchannel,        "openchannel", NULL);
     //TODO
-//    jrpc_register_procedure(&mJrpc, cmd_fund,        "fund", NULL);
 //    jrpc_register_procedure(&mJrpc, cmd_eraseinvoice,"eraseinvoice", NULL);
 //    jrpc_register_procedure(&mJrpc, cmd_pay,         "PAY", NULL);
 //    jrpc_register_procedure(&mJrpc, cmd_routepay_first, "routepay", NULL);
 //    jrpc_register_procedure(&mJrpc, cmd_routepay,    "routepay_cont", NULL);
 //    jrpc_register_procedure(&mJrpc, cmd_close,       "close", NULL);
 //    jrpc_register_procedure(&mJrpc, cmd_removechannel,"removechannel", NULL);
-    
+
     jrpc_server_run(&mJrpc);
     jrpc_server_destroy(&mJrpc);
 }
@@ -1066,7 +1065,6 @@ static bool proc_listtransactions(const char *peer_nodeid, cJSON **res, int *err
     return true;
 }
 
-
 static cJSON *cmd_listtransactions(jrpc_context *ctx, cJSON *params, cJSON *id)
 {
     json_start(ctx, params, id);
@@ -1081,6 +1079,101 @@ static cJSON *cmd_listtransactions(jrpc_context *ctx, cJSON *params, cJSON *id)
     if (!is_end_of_params(params, index++)) goto LABEL_EXIT;
 
     if (!proc_listtransactions(peer_nodeid, &res, &err)) goto LABEL_EXIT;
+
+LABEL_EXIT:
+    return json_end(ctx, err, res);
+}
+
+static bool proc_openchannel(const char *peer_nodeid, uint64_t funding_sat, uint64_t push_sat, uint32_t feerate_per_kw, const char *txid, uint32_t txindex, cJSON **res, int *err)
+{
+    *res = NULL;
+    *err = 0;
+
+    LOGD("openchannel\n");
+    LOGD("peer_nodeid=%s\n", peer_nodeid);
+    LOGD("funding_sat=%" PRIu64 "\n", funding_sat);
+    LOGD("push_sat=%" PRIu64 "\n", push_sat);
+    LOGD("feerate_per_kw=%" PRIu32 "\n", feerate_per_kw);
+    LOGD("txid=%s\n", txid);
+    LOGD("txindex=%" PRIu32 "\n", txindex);
+
+    //node_id
+    uint8_t node_id[BTC_SZ_PUBKEY];
+    if (!parse_peer_node_id(node_id, peer_nodeid)) {
+        *err = RPCERR_PARSE;
+        return false;
+    }
+
+    //fund
+    funding_conf_t fund;
+    fund.funding_sat = funding_sat;
+    fund.push_sat = push_sat;
+    fund.feerate_per_kw = feerate_per_kw;
+    if (!utl_misc_str2bin_rev(fund.txid, BTC_SZ_TXID, txid)) {
+        *err = RPCERR_PARSE;
+        return false;
+    }
+    fund.txindex = txindex;
+
+    lnapp_conf_t *p_appconf = search_connected_lnapp_node(node_id);
+    if (p_appconf == NULL) {
+        //not connected
+        *err = RPCERR_NOCONN;
+        return false;
+    }
+
+    if (ln_node_search_channel(NULL, node_id)) {
+        //already opened
+        *err = RPCERR_ALOPEN;
+        return false;
+    }
+
+    if (ln_is_funding(p_appconf->p_self)) {
+        //already opening
+        *err = RPCERR_OPENING;
+        return false;
+    }
+
+    if (!lnapp_is_inited(p_appconf)) {
+        //BOLTメッセージとして初期化が完了していない(init/channel_reestablish交換できていない)
+        *err = RPCERR_NOINIT;
+        return false;
+    }
+
+    if (!lnapp_funding(p_appconf, &fund)) {
+        *err = RPCERR_FUNDING;
+        return false;
+    }
+
+    return true;
+}
+
+static cJSON *cmd_openchannel(jrpc_context *ctx, cJSON *params, cJSON *id)
+{
+    json_start(ctx, params, id);
+
+    int err = RPCERR_PARSE;
+    cJSON *res = NULL;
+    int index = 0;
+
+    const char *peer_nodeid;
+    uint64_t funding_sat;
+    uint64_t push_sat;
+    uint32_t feerate_per_kw;
+    const char *txid;
+    uint32_t txindex;
+
+    if (!get_string(params, index++, &peer_nodeid)) goto LABEL_EXIT;
+    if (!get_u64(params, index++, &funding_sat)) goto LABEL_EXIT;
+    if (!get_u64(params, index++, &push_sat)) goto LABEL_EXIT;
+    //XXX TODO optional params
+    if (!get_u32(params, index++, &feerate_per_kw)) goto LABEL_EXIT;
+    if (!get_string(params, index++, &txid)) goto LABEL_EXIT;
+    if (!get_u32(params, index++, &txindex)) goto LABEL_EXIT;
+    if (!is_end_of_params(params, index++)) goto LABEL_EXIT;
+
+    if (!proc_openchannel(peer_nodeid, funding_sat, push_sat, feerate_per_kw, txid, txindex, &res, &err)) goto LABEL_EXIT;
+    res = cJSON_CreateString("Progressing");
 
 LABEL_EXIT:
     return json_end(ctx, err, res);
@@ -1172,78 +1265,6 @@ LABEL_EXIT:
 /** channel establish開始 : ptarmcli -f
  *
  */
-//static cJSON *cmd_fund(jrpc_context *ctx, cJSON *params, cJSON *id)
-//{
-//    (void)id;
-//
-//    int err = RPCERR_PARSE;
-//    cJSON *json;
-//    peer_conn_t conn;
-//    funding_conf_t fundconf;
-//    cJSON *result = NULL;
-//    int index = 0;
-//
-//    //connect parameter
-//    bool ret = json_connect(params, &index, &conn);
-//    if (!ret) {
-//        goto LABEL_EXIT;
-//    }
-//
-//    //funding parameter
-//    //txid
-//    json = cJSON_GetArrayItem(params, index++);
-//    if (json && (json->type == cJSON_String)) {
-//        utl_misc_str2bin_rev(fundconf.txid, BTC_SZ_TXID, json->valuestring);
-//        LOGD("txid=%s\n", json->valuestring);
-//    } else {
-//        goto LABEL_EXIT;
-//    }
-//    //txindex
-//    json = cJSON_GetArrayItem(params, index++);
-//    if (json && (json->type == cJSON_Number)) {
-//        fundconf.txindex = json->valueint;
-//        LOGD("txindex=%d\n", json->valueint);
-//    } else {
-//        goto LABEL_EXIT;
-//    }
-//    //funding_sat
-//    json = cJSON_GetArrayItem(params, index++);
-//    if (json && (json->type == cJSON_Number)) {
-//        fundconf.funding_sat = json->valueu64;
-//        LOGD("funding_sat=%" PRIu64 "\n", fundconf.funding_sat);
-//    } else {
-//        goto LABEL_EXIT;
-//    }
-//    //push_sat
-//    json = cJSON_GetArrayItem(params, index++);
-//    if (json && (json->type == cJSON_Number)) {
-//        fundconf.push_sat = json->valueu64;
-//        LOGD("push_sat=%" PRIu64 "\n", fundconf.push_sat);
-//    } else {
-//        goto LABEL_EXIT;
-//    }
-//    //feerate_per_kw
-//    json = cJSON_GetArrayItem(params, index++);
-//    if (json && (json->type == cJSON_Number)) {
-//        fundconf.feerate_per_kw = (uint32_t)json->valueu64;
-//        LOGD("feerate_per_kw=%" PRIu32 "\n", fundconf.feerate_per_kw);
-//    } else {
-//        //デフォルト値
-//        fundconf.feerate_per_kw = 0;
-//    }
-//
-//
-//    err = cmd_fund_proc(conn.node_id, &fundconf);
-//
-//LABEL_EXIT:
-//    if (err == 0) {
-//        result = cJSON_CreateObject();
-//        cJSON_AddItemToObject(result, "status", cJSON_CreateString("Progressing"));
-//    } else {
-//        ctx->error_code = err;
-//        ctx->error_message = ptarmd_error_str(err);
-//    }
-//    return result;
 //}
 
 
@@ -1767,41 +1788,6 @@ LABEL_EXIT:
  * @param[in]   pFund
  * @retval  エラーコード
  */
-//static int cmd_fund_proc(const uint8_t *pNodeId, const funding_conf_t *pFund)
-//{
-//    LOGD("fund\n");
-//
-//    lnapp_conf_t *p_appconf = search_connected_lnapp_node(pNodeId);
-//    if (p_appconf == NULL) {
-//        //未接続
-//        return RPCERR_NOCONN;
-//    }
-//
-//    bool haveCnl = ln_node_search_channel(NULL, pNodeId);
-//    if (haveCnl) {
-//        //開設しようとしてチャネルが開いている
-//        return RPCERR_ALOPEN;
-//    }
-//
-//    bool is_funding = ln_is_funding(p_appconf->p_self);
-//    if (is_funding) {
-//        //開設しようとしてチャネルが開設中
-//        return RPCERR_OPENING;
-//    }
-//
-//    bool inited = lnapp_is_inited(p_appconf);
-//    if (!inited) {
-//        //BOLTメッセージとして初期化が完了していない(init/channel_reestablish交換できていない)
-//        return RPCERR_NOINIT;
-//    }
-//
-//    bool ret = lnapp_funding(p_appconf, pFund);
-//    if (!ret) {
-//        return RPCERR_FUNDING;
-//    }
-//
-//    return 0;
-//}
 
 
 /** invoice作成

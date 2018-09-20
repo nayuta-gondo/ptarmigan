@@ -121,6 +121,10 @@ int main(int argc, char *argv[])
         {"addinvoice", 1},
         {"connectpeer", 2},
         {"dev-disableautoconnect", 0},
+        {"openchannel", 1},
+        {"openchannel", 2},
+        {"openchannel", 3},
+        {"openchannel", 5},
         {NULL, 0}, //watchdog
     };
     utl_str_t body;

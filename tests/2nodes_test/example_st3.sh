@@ -20,7 +20,8 @@ sleep 5
 
 # node_4444からnode_3333へチャネルを開く。
 ./fund-test-in.sh > node_4444/fund4444_3333.conf
-./ptarmcli -c conf/peer3333.conf -f node_4444/fund4444_3333.conf 4445
+. node_4444/fund4444_3333.conf
+./ptarmcli -rpcport=4445 openchannel $node_id $funding_sat $push_sat 0 $txid $txindex
 
 # 少し待つ
 echo wait...
