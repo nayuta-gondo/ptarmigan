@@ -105,11 +105,11 @@ static cJSON *cmd_disableautoconnect(jrpc_context *ctx, cJSON *params, cJSON *id
 static cJSON *cmd_listtransactions(jrpc_context *ctx, cJSON *params, cJSON *id);
 static cJSON *cmd_openchannel(jrpc_context *ctx, cJSON *params, cJSON *id);
 static cJSON *cmd_closechannel(jrpc_context *ctx, cJSON *params, cJSON *id);
+static cJSON *cmd_removechannel(jrpc_context *ctx, cJSON *params, cJSON *id);
 
 //static cJSON *cmd_pay(jrpc_context *ctx, cJSON *params, cJSON *id);
 //static cJSON *cmd_routepay_first(jrpc_context *ctx, cJSON *params, cJSON *id);
 //static cJSON *cmd_routepay(jrpc_context *ctx, cJSON *params, cJSON *id);
-//static cJSON *cmd_removechannel(jrpc_context *ctx, cJSON *params, cJSON *id);
 //
 //static int cmd_connect_proc(const peer_conn_t *pConn, jrpc_context *ctx);
 //static int cmd_disconnect_proc(const uint8_t *pNodeId);
@@ -159,12 +159,12 @@ void cmd_json_start(uint16_t Port)
     jrpc_register_procedure(&mJrpc, cmd_listtransactions,   "dev-listtransactions", NULL);
     jrpc_register_procedure(&mJrpc, cmd_openchannel,        "openchannel", NULL);
     jrpc_register_procedure(&mJrpc, cmd_closechannel,       "closechannel", NULL);
+    jrpc_register_procedure(&mJrpc, cmd_removechannel,      "dev-removechannel", NULL);
     //TODO
 //    jrpc_register_procedure(&mJrpc, cmd_eraseinvoice,"eraseinvoice", NULL);
 //    jrpc_register_procedure(&mJrpc, cmd_pay,         "PAY", NULL);
 //    jrpc_register_procedure(&mJrpc, cmd_routepay_first, "routepay", NULL);
 //    jrpc_register_procedure(&mJrpc, cmd_routepay,    "routepay_cont", NULL);
-//    jrpc_register_procedure(&mJrpc, cmd_removechannel,"removechannel", NULL);
 
     jrpc_server_run(&mJrpc);
     jrpc_server_destroy(&mJrpc);
@@ -1186,6 +1186,7 @@ static bool proc_closechannel(const char *peer_nodeid, bool force, cJSON **res, 
     *err = 0;
 
     LOGD("closechannel\n");
+    LOGD("peer_nodeid=%s\n", peer_nodeid);
     LOGD("force=%s\n", force ? "true" : "false");
 
     //node_id
@@ -1234,6 +1235,49 @@ static cJSON *cmd_closechannel(jrpc_context *ctx, cJSON *params, cJSON *id)
 LABEL_EXIT:
     return json_end(ctx, err, res);
 }
+
+static bool proc_removechannel(const char *channelid, cJSON **res, int *err)
+{
+    *res = NULL;
+    *err = 0;
+
+    LOGD("removechannel\n");
+    LOGD("channelid=%s\n", channelid);
+
+    //channel_id
+    uint8_t channel_id[LN_SZ_CHANNEL_ID];
+    if (!utl_misc_str2bin(channel_id, LN_SZ_CHANNEL_ID, channelid)) {
+        *err = RPCERR_PARSE;
+        return false;
+    }
+
+    if (!ln_db_self_del(channel_id)) {
+        *err = RPCERR_PARSE;
+        return false;
+    }
+
+    return true;
+}
+
+static cJSON *cmd_removechannel(jrpc_context *ctx, cJSON *params, cJSON *id)
+{
+    json_start(ctx, params, id);
+
+    int err = RPCERR_PARSE;
+    cJSON *res = NULL;
+    int index = 0;
+
+    const char *channelid;
+
+    if (!get_string(params, index++, &channelid)) goto LABEL_EXIT;
+    if (!is_end_of_params(params, index++)) goto LABEL_EXIT;
+
+    if (!proc_removechannel(channelid, &res, &err)) goto LABEL_EXIT;
+
+LABEL_EXIT:
+    return json_end(ctx, err, res);
+}
+
 
 /** 状態出力 : ptarmcli -l
  *
@@ -1669,26 +1713,6 @@ LABEL_EXIT:
  *
  * DBから強制的にチャネル情報を削除する。
  */
-//static cJSON *cmd_removechannel(jrpc_context *ctx, cJSON *params, cJSON *id)
-//{
-//    (void)id;
-//
-//    bool ret = false;
-//
-//    cJSON *json = cJSON_GetArrayItem(params, 0);
-//    if (json && (json->type == cJSON_String)) {
-//        uint8_t channel_id[LN_SZ_CHANNEL_ID];
-//        utl_misc_str2bin(channel_id, sizeof(channel_id), json->valuestring);
-//        ret = ln_db_self_del(channel_id);
-//    }
-//    if (ret) {
-//        return cJSON_CreateString(kOK);
-//    } else {
-//        ctx->error_code = RPCERR_PARSE;
-//        ctx->error_message = ptarmd_error_str(RPCERR_PARSE);
-//        return NULL;
-//    }
-//}
 
 
 /** feerate_per_kw手動設定 : ptarmcli --setfeerate
