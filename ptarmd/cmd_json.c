@@ -82,7 +82,7 @@ static struct jrpc_server   mJrpc;
 static char                 mLastPayErr[M_SZ_PAYERR];       //最後に送金エラーが発生した時刻
 //static int                  mPayTryCount = 0;               //送金トライ回数
 //
-//static const char *kOK = "OK";
+static const char *kOK = "OK";
 
 
 /********************************************************************
@@ -106,6 +106,7 @@ static cJSON *cmd_listtransactions(jrpc_context *ctx, cJSON *params, cJSON *id);
 static cJSON *cmd_openchannel(jrpc_context *ctx, cJSON *params, cJSON *id);
 static cJSON *cmd_closechannel(jrpc_context *ctx, cJSON *params, cJSON *id);
 static cJSON *cmd_removechannel(jrpc_context *ctx, cJSON *params, cJSON *id);
+static cJSON *cmd_resetroutestate(jrpc_context *ctx, cJSON *params, cJSON *id);
 
 //static cJSON *cmd_pay(jrpc_context *ctx, cJSON *params, cJSON *id);
 //static cJSON *cmd_routepay_first(jrpc_context *ctx, cJSON *params, cJSON *id);
@@ -160,6 +161,8 @@ void cmd_json_start(uint16_t Port)
     jrpc_register_procedure(&mJrpc, cmd_openchannel,        "openchannel", NULL);
     jrpc_register_procedure(&mJrpc, cmd_closechannel,       "closechannel", NULL);
     jrpc_register_procedure(&mJrpc, cmd_removechannel,      "dev-removechannel", NULL);
+    jrpc_register_procedure(&mJrpc, cmd_resetroutestate,    "resetroutestate", NULL);
+
     //TODO
 //    jrpc_register_procedure(&mJrpc, cmd_eraseinvoice,"eraseinvoice", NULL);
 //    jrpc_register_procedure(&mJrpc, cmd_pay,         "PAY", NULL);
@@ -247,7 +250,7 @@ int cmd_json_pay_retry(const uint8_t *pPayHash) {
 
 static cJSON *json_end(jrpc_context *ctx, int err, cJSON *res) {
     if (err == 0) {
-        return res ? res : cJSON_CreateString("OK");
+        return res ? res : cJSON_CreateString(kOK);
     } else {
         ctx->error_code = err;
         ctx->error_message = ptarmd_error_str(err); //XXX
@@ -1278,84 +1281,33 @@ LABEL_EXIT:
     return json_end(ctx, err, res);
 }
 
+static bool proc_resetroutestate(cJSON **res, int *err)
+{
+    *res = NULL;
+    *err = 0;
 
-/** 状態出力 : ptarmcli -l
- *
- */
-//static cJSON *cmd_getinfo(jrpc_context *ctx, cJSON *params, cJSON *id)
-//{
-//    (void)ctx; (void)params; (void)id;
-//
-//    cJSON *result = cJSON_CreateObject();
-//    cJSON *result_peer = cJSON_CreateArray();
-//
-//    uint64_t amount = ln_node_total_msat();
-//
-//    //basic info
-//    char node_id[BTC_SZ_PUBKEY * 2 + 1];
-//    utl_misc_bin2str(node_id, ln_node_getid(), BTC_SZ_PUBKEY);
-//    cJSON_AddItemToObject(result, "node_id", cJSON_CreateString(node_id));
-//    cJSON_AddItemToObject(result, "node_port", cJSON_CreateNumber(ln_node_addr()->port));
-//    cJSON_AddNumber64ToObject(result, "total_our_msat", amount);
-//
-//#ifdef DEVELOPER_MODE
-//    //blockcount
-//    int32_t blockcnt = btcrpc_getblockcount();
-//    if (blockcnt < 0) {
-//        LOGD("fail btcrpc_getblockcount()\n");
-//    } else {
-//        cJSON_AddItemToObject(result, "block_count", cJSON_CreateNumber(blockcnt));
-//    }
-//#endif
-//
-//    //peer info
-//    p2p_svr_show_self(result_peer);
-//    p2p_cli_show_self(result_peer);
-//    cJSON_AddItemToObject(result, "peers", result_peer);
-//
-//    //payment info
-//    uint8_t *p_hash;
-//    int cnt = ln_db_invoice_get(&p_hash);
-//    if (cnt > 0) {
-//        cJSON *result_hash = cJSON_CreateArray();
-//        uint8_t *p = p_hash;
-//        for (int lp = 0; lp < cnt; lp++) {
-//            char hash_str[LN_SZ_HASH * 2 + 1];
-//            utl_misc_bin2str(hash_str, p, LN_SZ_HASH);
-//            p += LN_SZ_HASH;
-//            cJSON_AddItemToArray(result_hash, cJSON_CreateString(hash_str));
-//        }
-//        free(p_hash);       //ln_lmdbでmalloc/realloc()している
-//        cJSON_AddItemToObject(result, "paying_hash", result_hash);
-//    }
-//    cJSON_AddItemToObject(result, "last_errpay_date", cJSON_CreateString(mLastPayErr));
-//
-//    return result;
-//}
+    LOGD("resetroutestate\n");
 
+    ln_db_routeskip_drop(true);
 
-/** ノード終了 : ptarmcli -q
- *
- */
-//static cJSON *cmd_stop(jrpc_context *ctx, cJSON *params, cJSON *id)
-//{
-//    (void)ctx; (void)params; (void)id;
-//
-//    cJSON *result = NULL;
-//
-//    monitor_disable_autoconn(true);
-//    int err = cmd_stop_proc();
-//    if (err == 0) {
-//        result = cJSON_CreateString("OK");
-//    } else {
-//        ctx->error_code = err;
-//        ctx->error_message = ptarmd_error_str(err);
-//    }
-//    jrpc_server_stop(&mJrpc);
-//
-//    return result;
-//}
+    return true;
+}
 
+static cJSON *cmd_resetroutestate(jrpc_context *ctx, cJSON *params, cJSON *id)
+{
+    json_start(ctx, params, id);
+
+    int err = RPCERR_PARSE;
+    cJSON *res = NULL;
+    int index = 0;
+
+    if (!is_end_of_params(params, index++)) goto LABEL_EXIT;
+
+    if (!proc_resetroutestate(&res, &err)) goto LABEL_EXIT;
+
+LABEL_EXIT:
+    return json_end(ctx, err, res);
+}
 
 /** 送金開始(テスト用) : "PAY"
  *
