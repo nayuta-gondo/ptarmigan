@@ -39,7 +39,7 @@
 #include "cmd_json.h"
 #include "ln_db.h"
 //#include "ln_db_lmdb.h"
-//#include "btcrpc.h"
+#include "btcrpc.h"
 //
 #include "p2p_svr.h"
 #include "p2p_cli.h"
@@ -108,6 +108,8 @@ static cJSON *cmd_closechannel(jrpc_context *ctx, cJSON *params, cJSON *id);
 static cJSON *cmd_removechannel(jrpc_context *ctx, cJSON *params, cJSON *id);
 static cJSON *cmd_resetroutestate(jrpc_context *ctx, cJSON *params, cJSON *id);
 
+static cJSON *cmd_getnewaddress(jrpc_context *ctx, cJSON *params, cJSON *id);
+
 //static cJSON *cmd_pay(jrpc_context *ctx, cJSON *params, cJSON *id);
 //static cJSON *cmd_routepay_first(jrpc_context *ctx, cJSON *params, cJSON *id);
 //static cJSON *cmd_routepay(jrpc_context *ctx, cJSON *params, cJSON *id);
@@ -162,6 +164,8 @@ void cmd_json_start(uint16_t Port)
     jrpc_register_procedure(&mJrpc, cmd_closechannel,       "closechannel", NULL);
     jrpc_register_procedure(&mJrpc, cmd_removechannel,      "dev-removechannel", NULL);
     jrpc_register_procedure(&mJrpc, cmd_resetroutestate,    "resetroutestate", NULL);
+
+    jrpc_register_procedure(&mJrpc, cmd_getnewaddress,      "getnewaddress", NULL);
 
     //TODO
 //    jrpc_register_procedure(&mJrpc, cmd_eraseinvoice,"eraseinvoice", NULL);
@@ -1304,6 +1308,46 @@ static cJSON *cmd_resetroutestate(jrpc_context *ctx, cJSON *params, cJSON *id)
     if (!is_end_of_params(params, index++)) goto LABEL_EXIT;
 
     if (!proc_resetroutestate(&res, &err)) goto LABEL_EXIT;
+
+LABEL_EXIT:
+    return json_end(ctx, err, res);
+}
+
+static bool proc_getnewaddress(cJSON **res, int *err)
+{
+    *res = NULL;
+    *err = 0;
+
+    LOGD("getnewaddress\n");
+
+    utl_buf_t buf = UTL_BUF_INIT;
+    if (!btcrpc_getnewaddress(&buf)) { //XXX: TODO encode format
+        LOGD("fail: create address\n");
+        *err = RPCERR_BLOCKCHAIN;
+        return false;
+    }
+
+    char addr[BTC_SZ_ADDR_MAX];
+    utl_misc_bin2str(addr, buf.buf, buf.len);
+    utl_buf_free(&buf);
+
+    *res = cJSON_CreateObject();
+    cJSON_AddItemToObject(*res, "address", cJSON_CreateString(addr));
+
+    return true;
+}
+
+static cJSON *cmd_getnewaddress(jrpc_context *ctx, cJSON *params, cJSON *id)
+{
+    json_start(ctx, params, id);
+
+    int err = RPCERR_PARSE;
+    cJSON *res = NULL;
+    int index = 0;
+
+    if (!is_end_of_params(params, index++)) goto LABEL_EXIT;
+
+    if (!proc_getnewaddress(&res, &err)) goto LABEL_EXIT;
 
 LABEL_EXIT:
     return json_end(ctx, err, res);
