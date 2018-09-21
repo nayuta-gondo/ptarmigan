@@ -109,6 +109,7 @@ static cJSON *cmd_removechannel(jrpc_context *ctx, cJSON *params, cJSON *id);
 static cJSON *cmd_resetroutestate(jrpc_context *ctx, cJSON *params, cJSON *id);
 
 static cJSON *cmd_getnewaddress(jrpc_context *ctx, cJSON *params, cJSON *id);
+static cJSON *cmd_listunspent(jrpc_context *ctx, cJSON *params, cJSON *id);
 
 //static cJSON *cmd_pay(jrpc_context *ctx, cJSON *params, cJSON *id);
 //static cJSON *cmd_routepay_first(jrpc_context *ctx, cJSON *params, cJSON *id);
@@ -171,6 +172,7 @@ void cmd_json_start(uint16_t Port)
     jrpc_register_procedure(&mJrpc, cmd_resetroutestate,    "resetroutestate", NULL);
 
     jrpc_register_procedure(&mJrpc, cmd_getnewaddress,      "getnewaddress", NULL);
+    jrpc_register_procedure(&mJrpc, cmd_listunspent,        "listunspent", NULL);
 
     //TODO
 //    jrpc_register_procedure(&mJrpc, cmd_eraseinvoice,"eraseinvoice", NULL);
@@ -1349,6 +1351,49 @@ static cJSON *cmd_getnewaddress(jrpc_context *ctx, cJSON *params, cJSON *id)
     if (!is_end_of_params(params, index++)) goto LABEL_EXIT;
 
     if (!proc_getnewaddress(&res, &err)) goto LABEL_EXIT;
+
+LABEL_EXIT:
+    return json_end(ctx, err, res);
+}
+
+static bool proc_listunspent(const char *address, uint16_t maximum_count, cJSON **res, int *err)
+{
+    *res = NULL;
+    *err = 0;
+
+    LOGD("listunspent\n");
+    LOGD("address=%s\n", address);
+    LOGD("maximum_count=%u\n", maximum_count);
+
+/*    char addr[BTC_SZ_ADDR_MAX];
+    if (!btcrpc_listunspent(addr)) {
+        LOGD("fail: create address\n");
+        *err = RPCERR_BLOCKCHAIN;
+        return false;
+    }
+
+    *res = cJSON_CreateObject();
+    cJSON_AddItemToObject(*res, "address", cJSON_CreateString(addr));
+*/
+    return true;
+}
+
+static cJSON *cmd_listunspent(jrpc_context *ctx, cJSON *params, cJSON *id)
+{
+    json_start(ctx, params, id);
+
+    int err = RPCERR_PARSE;
+    cJSON *res = NULL;
+    int index = 0;
+
+    const char *address;
+    uint16_t maximum_count;
+
+    if (!get_string(params, index++, &address)) goto LABEL_EXIT;
+    if (!get_u16(params, index++, &maximum_count)) goto LABEL_EXIT;
+    if (!is_end_of_params(params, index++)) goto LABEL_EXIT;
+
+    if (!proc_listunspent(address, maximum_count, &res, &err)) goto LABEL_EXIT;
 
 LABEL_EXIT:
     return json_end(ctx, err, res);
