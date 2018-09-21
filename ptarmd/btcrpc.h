@@ -34,6 +34,18 @@
 
 
 /********************************************************************
+ * typedefs
+ ********************************************************************/
+
+typedef struct {
+    char txid[BTC_SZ_TXID * 2 + 1]; ///< the transaction id 
+    uint32_t vout;                  ///< the vout value
+    uint64_t amount_sat;            ///< the transaction output amount in Satoshi
+    uint32_t confirmations;         ///< the number of confirmations
+} btcrpc_unspent_t;  
+
+
+/********************************************************************
  * prototypes
  ********************************************************************/
 
@@ -218,5 +230,17 @@ void btcrpc_set_fundingtx(const ln_self_t *self, const uint8_t *pTxBuf, uint32_t
  * @param[in]   self
  */
 void btcrpc_set_committxid(const ln_self_t *self);
+
+
+/** [bitcoin IF]list UTXOs by address
+ * 
+ * @param[out]  pListUnspent    UTXOs
+ * @param[out]  pCount          number of UTXOs
+ * @param[in]   pAddr           address
+ * @param[in]   maximumCount    maximum number of UTXOs
+ * @retval  true        取得成功
+ */
+bool btcrpc_listunspent(btcrpc_unspent_t* pListUnspent, uint16_t* pCount, const char pAddr[BTC_SZ_ADDR_MAX], uint16_t maximumCount);
+
 
 #endif /* BTCRPC_H__ */

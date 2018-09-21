@@ -543,6 +543,12 @@ void btcrpc_set_committxid(const ln_self_t *self)
 }
 
 
+bool btcrpc_listunspent(btcrpc_unspent_t* pListUnspent, uint16_t* pCount, const char pAddr[BTC_SZ_ADDR_MAX], uint16_t maximumCount)
+{
+    return false;
+}
+
+
 /**************************************************************************
  * private functions
  **************************************************************************/
